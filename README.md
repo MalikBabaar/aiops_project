@@ -17,7 +17,7 @@ The goal is to detect unusual or suspicious events in JBoss server logs to help 
 ### 1. Fetch Logs from JBoss Server
 
 - Obtain raw logs from your JBoss server (e.g., `server.log`).
-- Logs can be collected via SSH, file transfer, or using log shippers like Filebeat or Fluentd.
+- Logs can be collected via Filebeat.
 
 ### 2. Parse Logs with Regex
 
@@ -28,22 +28,26 @@ The goal is to detect unusual or suspicious events in JBoss server logs to help 
   - **Component and Process ID (PID)** (e.g., `sshd[1234]`)
   - **Message content**
 
-- Example regex pattern (Python):
 
-  ```python
-  pattern = r'(?P<timestamp>\S+) (?P<host>\S+) (?P<component>\S+)\[(?P<pid>\d+)\]: (?P<message>.*)'
+3.Feature Extraction
 
+For each parsed log entry, we extract the following features to feed into the model:
 
-3. Feature Extraction
+hour
+The hour of the day (0 to 23), derived from the log's timestamp.
 
-From parsed logs, extract these features for modeling:
+dayofweek
+The day of the week (0 = Monday, up to 6 = Sunday), also extracted from the timestamp.
 
-Feature	Description
-hour	Hour of the day (0-23) from timestamp
-dayofweek	Day of the week (0=Monday to 6=Sunday) from timestamp
-pid	Process ID extracted from the component
-auth_failure	Binary flag — 1 if message contains "authentication failure"
-failed_password	Binary flag — 1 if message contains "failed password"
+pid
+The process ID (PID), extracted from the log component (e.g., a number inside brackets like [1234]).
+
+auth_failure
+A binary indicator set to 1 if the log message contains the phrase "authentication failure", otherwise 0.
+
+failed_password
+A binary indicator set to 1 if the log message contains the phrase "failed password", otherwise 0.
+
 
 4. Proxy Labels for Evaluation (Optional)
 
@@ -55,18 +59,8 @@ Label = 0 otherwise.
 
 These help evaluate the anomaly detection performance without manual labels.
 
-5. Model Training
+6. Trained Isolation Forest Model
 
-Train an Isolation Forest on the extracted features:
-
-from sklearn.ensemble import IsolationForest
-
-features = df[['hour', 'dayofweek', 'pid', 'auth_failure', 'failed_password']]
-model = IsolationForest(contamination=0.01, random_state=42)
-model.fit(features)
-
-
-Save the trained model for inference.
 
 6. Anomaly Detection (Inference)
 
