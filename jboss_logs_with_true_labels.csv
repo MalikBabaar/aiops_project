@@ -1,6 +1,0 @@
-timestamp,message,pid,true_label
-2025-09-25T12:34:56.123+00:00,myhost component[1234]: authentication failure detected,1234,1
-2025-09-25T13:00:00.000+00:00,myhost component[5678]: normal log entry,5678,0
-2025-09-25T14:15:22.000+00:00,myhost component[1234]: failed password for user admin,1234,1
-2025-09-25T15:30:00.000+00:00,myhost component[5678]: user logged in successfully,5678,0
-2025-09-25T16:45:10.000+00:00,myhost component[1234]: authentication failure detected,1234,1
