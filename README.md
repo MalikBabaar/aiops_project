@@ -33,19 +33,19 @@ The goal is to detect unusual or suspicious events in JBoss server logs to help 
 
 For each parsed log entry, we extract the following features to feed into the model:
 
-hour
+hour:
 The hour of the day (0 to 23), derived from the log's timestamp.
 
-dayofweek
+dayofweek:
 The day of the week (0 = Monday, up to 6 = Sunday), also extracted from the timestamp.
 
-pid
+pid:
 The process ID (PID), extracted from the log component (e.g., a number inside brackets like [1234]).
 
-auth_failure
+auth_failure:
 A binary indicator set to 1 if the log message contains the phrase "authentication failure", otherwise 0.
 
-failed_password
+failed_password:
 A binary indicator set to 1 if the log message contains the phrase "failed password", otherwise 0.
 
 
