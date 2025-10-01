@@ -1,4 +1,0 @@
-model_path: "./isolation_forest_model.joblib"
-api_port: 5000
-log_path: "./data/logs"
-anomaly_threshold: 0
