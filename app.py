@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 import yaml
 from dotenv import load_dotenv
 from datetime import datetime, timezone
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 load_dotenv()
 
@@ -31,8 +32,8 @@ app = FastAPI()
 try:
     model = joblib.load(MODEL_PATH)
 except Exception as e:
-    # If loading fails, raise on startup so you notice the issue early
-    raise RuntimeError(f"Failed to load model at {MODEL_PATH}: {e}")
+    print(f"⚠️ Warning: No model found at {MODEL_PATH}. Retrain before using /analyze.")
+    model = None
 
 class LogInput(BaseModel):
     log: str
@@ -122,8 +123,22 @@ async def retrain(new_logs: list[LogInput]):
         MODEL_PATH = model_filename
         model = new_model
 
-        # Placeholder metric; replace with proper validation if available
-        f1 = 0.87
+        # --- Metrics calculation (if labels exist) ---
+        # Example: suppose your CSV has a column "label" (0=normal, 1=anomaly)
+        # Replace with your actual labeling strategy
+        if "label" in df_features.columns:
+            y_true = df_features["label"].tolist()
+            y_pred = new_model.predict(df_features.drop(columns=["label"]))
+            y_pred = [0 if p == 1 else 1 for p in y_pred]  # map: 1=normal → 0, -1=anomaly → 1
+
+            acc = accuracy_score(y_true, y_pred)
+            prec = precision_score(y_true, y_pred, zero_division=0)
+            rec = recall_score(y_true, y_pred, zero_division=0)
+            f1 = f1_score(y_true, y_pred, zero_division=0)
+        else:
+            # No labels → just placeholder
+            acc = prec = rec = f1 = None
+
         new_version = version
 
     except Exception as e:
@@ -132,6 +147,9 @@ async def retrain(new_logs: list[LogInput]):
     return JSONResponse(content={
         "status": "success",
         "new_model_version": new_version,
+        "accuracy": acc,
+        "precision": prec,
+        "recall": rec,
         "f1_score": f1,
         "training_time": training_time_str
     })
