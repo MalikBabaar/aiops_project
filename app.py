@@ -1,4 +1,3 @@
-from datetime import datetime, timezone
 import os
 import re
 import joblib
@@ -8,6 +7,7 @@ from pydantic import BaseModel
 from fastapi.responses import JSONResponse
 import yaml
 from dotenv import load_dotenv
+from datetime import datetime, timezone
 
 load_dotenv()
 
@@ -28,13 +28,28 @@ API_PORT = int(os.getenv("API_PORT", config.get("api_port", 5000)))
 ANOMALY_THRESHOLD = float(config.get("anomaly_threshold", 0))
 
 app = FastAPI()
-model = joblib.load(MODEL_PATH)
+try:
+    model = joblib.load(MODEL_PATH)
+except Exception as e:
+    # If loading fails, raise on startup so you notice the issue early
+    raise RuntimeError(f"Failed to load model at {MODEL_PATH}: {e}")
 
 class LogInput(BaseModel):
     log: str
 
 def extract_features_from_log(log: str):
-    timestamp_str = log.split(' ')[0]
+    # Not perfect parser, but consistent with previous implementation
+    # timestamp_str may be "2025-10-03" or "2025-10-03 10:12:45,321" depending on log format
+    # Attempt to find first token that looks like a timestamp (contains '-')
+    parts = log.split()
+    timestamp_str = ""
+    for tok in parts:
+        if "-" in tok or ":" in tok:
+            timestamp_str = tok
+            break
+    if not timestamp_str:
+        timestamp_str = parts[0] if parts else ""
+
     timestamp = pd.to_datetime(timestamp_str, errors='coerce')
     if pd.isna(timestamp):
         timestamp = pd.Timestamp.now()
@@ -45,7 +60,7 @@ def extract_features_from_log(log: str):
     pid_match = re.search(r'\[(\d+)\]', log)
     pid = int(pid_match.group(1)) if pid_match else 0
 
-    message_part = ' '.join(log.split(' ')[1:])
+    message_part = ' '.join(parts[1:]) if len(parts) > 1 else log
     auth_failure = int('authentication failure' in message_part.lower())
     failed_password = int('failed password' in message_part.lower())
 
@@ -80,7 +95,7 @@ async def analyze(payload: LogInput):
 @app.post("/retrain")
 async def retrain(new_logs: list[LogInput]):
     try:
-        features_list = [extract_features_from_log(log.log) for log in new_logs]
+        features_list = [extract_features_from_log(item.log) for item in new_logs]
         df_features = pd.concat(features_list, ignore_index=True)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse logs: {e}")
@@ -94,6 +109,7 @@ async def retrain(new_logs: list[LogInput]):
 
         # Save model with version
         version = datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs("models", exist_ok=True)
         model_filename = f"models/isolation_forest_{version}.joblib"
         joblib.dump(new_model, model_filename)
 
@@ -101,10 +117,13 @@ async def retrain(new_logs: list[LogInput]):
         with open("latest_model.txt", "w") as f:
             f.write(model_filename)
 
-        global model
+        # Update globals so runtime reflects new model
+        global model, MODEL_PATH
+        MODEL_PATH = model_filename
         model = new_model
 
-        f1 = 0.87  # Placeholder score
+        # Placeholder metric; replace with proper validation if available
+        f1 = 0.87
         new_version = version
 
     except Exception as e:
