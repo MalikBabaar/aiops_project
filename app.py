@@ -14,6 +14,8 @@ from prometheus_client import Gauge, CollectorRegistry, generate_latest, CONTENT
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.ensemble import IsolationForest
 from typing import List
+from tasks import retrain_model_task
+
 
 # ---------------- CONFIG ---------------- #
 load_dotenv()

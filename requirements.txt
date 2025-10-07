@@ -5,4 +5,8 @@ pandas
 python-dotenv
 scikit-learn
 PyYAML
+celery
+requests
+psutil
+prometheus_client
 

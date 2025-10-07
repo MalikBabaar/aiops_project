@@ -86,3 +86,4 @@ timestamp,log,anomaly_score,is_anomaly
   ""log"": ""[2025-09-22 14:45:19] ERROR [org.jboss.txn] Distributed transaction rollback failed""
 }
 ",0.05802,True
+2025-10-07T06:57:50.096272+00:00,ERROR [org.jboss.ejb3] test log,0.07058,True
