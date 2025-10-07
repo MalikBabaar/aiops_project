@@ -1,0 +1,7 @@
+timestamp,source,type,severity,message,status
+2025-10-07T09:55:19.835865+00:00,JBoss Logs,Anomaly,critical,2025-10-07 14:22:00 ERROR [org.jboss] Critical failure in connection pool,acknowledged
+2025-10-07T10:01:49.226769+00:00,JBoss Logs,Anomaly,critical,2025-10-07 15:20:00 ERROR [org.jboss] Database connection lost unexpectedly,acknowledged
+2025-10-07T10:03:34.921804+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,acknowledged
+2025-10-07T10:24:53.359434+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
+2025-10-07T10:24:57.743967+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
+2025-10-07T10:25:02.767089+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active

@@ -1,1 +1,1 @@
-models/isolation_forest_20251006_180833.joblib
+models/isolation_forest_20251007_152359.joblib
