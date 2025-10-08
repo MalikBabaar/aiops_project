@@ -2,12 +2,19 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Install basic dependencies for pandas/numpy
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    python3-dev \
+    fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy requirements first (for caching)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy your Dashboard folder into container
-COPY Dashboard ./Dashboard
+COPY . .
 
 # Streamlit default port
 EXPOSE 8501

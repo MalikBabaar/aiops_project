@@ -1,30 +1,41 @@
+# celery_app.py
 from celery import Celery
-import os
-import sys
 
-# Ensure current directory is in sys.path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-# Create the Celery app
+# Connect to RabbitMQ broker (replace 'rabbitmq' with 'localhost' if running locally)
 celery_app = Celery(
     "aiops_tasks",
-    broker="amqp://guest:guest@rabbitmq:5672//",
+    broker="amqp://guest:guest@localhost:5672//",
     backend="rpc://"
 )
 
-# Explicitly import tasks so Celery can register them
-import tasks
+@celery_app.task
+def retrain_model_task(data):
+    import os
+    import joblib
+    import pandas as pd
+    from sklearn.ensemble import IsolationForest
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from datetime import datetime
 
-celery_app.autodiscover_tasks(["tasks"])
+    # --- Simulated retraining process ---
+    df = pd.DataFrame(data)
+    vectorizer = TfidfVectorizer(max_features=5000)
+    X = vectorizer.fit_transform(df["log"])
 
-celery_app.conf.task_routes = {
-    "tasks.retrain_model_task": {"queue": "retrain_queue"},
-}
+    model = IsolationForest(contamination=0.05, random_state=42)
+    model.fit(X)
 
-celery_app.conf.update(
-    task_serializer="json",
-    result_serializer="json",
-    accept_content=["json"],
-    timezone="UTC",
-    enable_utc=True,
-)
+    os.makedirs("models", exist_ok=True)
+    version = datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_file = f"models/isolation_forest_{version}.joblib"
+    vectorizer_file = f"models/vectorizer_{version}.joblib"
+
+    joblib.dump(model, model_file)
+    joblib.dump(vectorizer, vectorizer_file)
+
+    return {
+        "version": version,
+        "status": "completed",
+        "model_path": model_file,
+        "vectorizer_path": vectorizer_file
+    }

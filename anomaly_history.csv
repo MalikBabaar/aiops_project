@@ -86,4 +86,12 @@ timestamp,log,anomaly_score,is_anomaly
   ""log"": ""[2025-09-22 14:45:19] ERROR [org.jboss.txn] Distributed transaction rollback failed""
 }
 ",0.05802,True
+HEAD
 2025-10-07T06:57:50.096272+00:00,ERROR [org.jboss.ejb3] test log,0.07058,True
+2025-10-07T09:55:19.831821+00:00,2025-10-07 14:22:00 ERROR [org.jboss] Critical failure in connection pool,0.04994,True
+2025-10-07T10:01:49.226769+00:00,2025-10-07 15:20:00 ERROR [org.jboss] Database connection lost unexpectedly,0.05977,True
+2025-10-07T10:03:34.907534+00:00,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,0.06084,True
+2025-10-07T10:24:53.359434+00:00,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,0.06084,True
+2025-10-07T10:24:57.742019+00:00,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,0.06084,True
+2025-10-07T10:25:02.763972+00:00,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,0.06084,True
+2f2bc084f16bba2f5769f6e748c07658ec6b2ae0

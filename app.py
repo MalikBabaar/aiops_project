@@ -4,17 +4,20 @@ import joblib
 import pandas as pd
 import psutil
 import yaml
+import traceback
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import Gauge, CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.ensemble import IsolationForest
 from typing import List
 from tasks import retrain_model_task
+from celery_app import retrain_model_task
+from celery.result import AsyncResult
 
 
 # ---------------- CONFIG ---------------- #
@@ -28,6 +31,7 @@ app = FastAPI()
 ANOMALY_HISTORY_FILE = "anomaly_history.csv"
 MODEL_PATH_FILE = "latest_model.txt"
 VECTORIZER_PATH_FILE = "latest_vectorizer.txt"
+EVENTS_FILE = "events.csv"
 
 def get_latest_model_and_vectorizer():
     try:
@@ -35,7 +39,6 @@ def get_latest_model_and_vectorizer():
             model_path = f.read().strip()
         with open(VECTORIZER_PATH_FILE, "r") as f:
             vectorizer_path = f.read().strip()
-
         model = joblib.load(model_path)
         vectorizer = joblib.load(vectorizer_path)
         return model, vectorizer, model_path, vectorizer_path
@@ -49,26 +52,69 @@ ANOMALY_THRESHOLD = float(config.get("anomaly_threshold", 0))
 # ---------------- INPUT MODEL ---------------- #
 class LogInput(BaseModel):
     log: str
-    label: int | None = None   # optional field
+    label: int | None = None
 
-# ---------------- API ROUTES ---------------- #
+# ---------------- EVENTS & ALERTS ---------------- #
+def save_event(source, event_type, severity, message, status="active"):
+    """Helper to store alerts in CSV"""
+    record = pd.DataFrame([{
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "type": event_type,
+        "severity": severity,
+        "message": message,
+        "status": status
+    }])
+
+    if os.path.exists(EVENTS_FILE):
+        record.to_csv(EVENTS_FILE, mode="a", header=False, index=False)
+    else:
+        record.to_csv(EVENTS_FILE, index=False)
+
+@app.get("/events")
+def get_events():
+    """Fetch all events"""
+    if not os.path.exists(EVENTS_FILE):
+        return []
+    try:
+        df = pd.read_csv(EVENTS_FILE)
+        return df.to_dict(orient="records")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error reading events: {e}")
+
+@app.post("/events/ack/{timestamp}")
+def acknowledge_event(timestamp: str):
+    """Mark an event as acknowledged"""
+    if not os.path.exists(EVENTS_FILE):
+        raise HTTPException(status_code=404, detail="No events file found")
+
+    try:
+        df = pd.read_csv(EVENTS_FILE)
+
+        if timestamp not in df["timestamp"].values:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        df.loc[df["timestamp"] == timestamp, "status"] = "acknowledged"
+        df.to_csv(EVENTS_FILE, index=False)
+
+        return {"message": f"Event {timestamp} acknowledged successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error updating event: {e}")
+
+# ---------------- ANALYZE LOGS ---------------- #
 @app.post("/analyze")
 async def analyze(payload: LogInput):
     if model is None:
         raise HTTPException(status_code=500, detail="No trained model found. Retrain first.")
-
     try:
-        # Normalize payload.log
         log_text = payload.log
         if isinstance(log_text, dict):
             log_text = log_text.get("log", str(log_text))
 
-        # ML detection
         X = vectorizer.transform([log_text])
         score = model.decision_function(X)[0]
         is_anomaly = bool(score < ANOMALY_THRESHOLD)
 
-        # Rule-based detection (force anomaly if keywords found)
         critical_keywords = ["ERROR", "FATAL", "CRITICAL", "OUT OF MEMORY", "KERNEL PANIC", "SHUTDOWN"]
         if any(keyword.lower() in log_text.lower() for keyword in critical_keywords):
             is_anomaly = True
@@ -91,46 +137,116 @@ async def analyze(payload: LogInput):
     else:
         record.to_csv(ANOMALY_HISTORY_FILE, index=False)
 
+    # Save event if anomaly detected
+    if is_anomaly:
+        severity = "critical" if any(k.lower() in log_text.lower() for k in critical_keywords) else "warning"
+        save_event("JBoss Logs", "Anomaly", severity, log_text[:200], "active")
+
     return JSONResponse(content=result)
+
+@app.post("/retrain")
+async def retrain(new_logs: List[LogInput]):
+    try:
+        if not new_logs:
+            raise HTTPException(status_code=400, detail="No logs provided for retraining.")
+
+        df_features = pd.DataFrame([item.dict() for item in new_logs])
+        if "log" not in df_features.columns:
+            raise HTTPException(status_code=400, detail="Logs must contain a 'log' field.")
+
+        if len(df_features) > 10000:
+            df_features = df_features.sample(10000, random_state=42)
+
+        # --- Vectorize logs ---
+        new_vectorizer = TfidfVectorizer(max_features=5000)
+        X = new_vectorizer.fit_transform(df_features["log"])
+
+        # --- Train Isolation Forest ---
+        contamination = 0.05
+        new_model = IsolationForest(contamination=contamination, random_state=42)
+        new_model.fit(X)
+
+        # Save model + vectorizer
+        version = datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs("models", exist_ok=True)
+        model_filename = f"models/isolation_forest_{version}.joblib"
+        vectorizer_filename = f"models/vectorizer_{version}.joblib"
+
+        joblib.dump(new_model, model_filename)
+        joblib.dump(new_vectorizer, vectorizer_filename)
+
+        with open(MODEL_PATH_FILE, "w") as f:
+            f.write(model_filename)
+        with open(VECTORIZER_PATH_FILE, "w") as f:
+            f.write(vectorizer_filename)
+
+        # Update globals
+        global model, vectorizer, MODEL_PATH, VECTORIZER_PATH
+        model, vectorizer = new_model, new_vectorizer
+        MODEL_PATH, VECTORIZER_PATH = model_filename, vectorizer_filename
+
+        # --- Predict anomalies ---
+        y_pred = new_model.predict(X)
+        y_pred = [0 if p == 1 else 1 for p in y_pred]
+        anomalies = sum(y_pred)
+        anomaly_ratio = anomalies / len(y_pred)
+
+        acc = prec = rec = f1 = None
+        if "label" in df_features.columns and df_features["label"].notna().any():
+            try:
+                y_true = df_features["label"].astype(int).tolist()
+                acc = accuracy_score(y_true, y_pred)
+                prec = precision_score(y_true, y_pred, zero_division=0)
+                rec = recall_score(y_true, y_pred, zero_division=0)
+                f1 = f1_score(y_true, y_pred, zero_division=0)
+            except Exception:
+                pass  # ignore label errors for unlabeled data
+
+        return JSONResponse(content={
+            "status": "success",
+            "new_model_version": version,
+            "contamination_used": contamination,
+            "accuracy": acc,
+            "precision": prec,
+            "recall": rec,
+            "f1_score": f1,
+            "training_time": datetime.now(timezone.utc).isoformat(),
+            "detected_anomalies": anomalies,
+            "anomaly_ratio": anomaly_ratio
+        })
+
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        raise HTTPException(status_code=500, detail=f"Retrain failed: {e}\n{error_detail}")
+
+
+from fastapi import BackgroundTasks
+
+@app.post("/retrain-async")
+async def retrain_async(new_logs: List[LogInput]):
+    df_data = [item.dict() for item in new_logs]
+    task = retrain_model_task.delay(df_data)
+    return {"task_id": task.id, "status": "queued"}
+
+@app.get("/task-status/{task_id}")
+def get_task_status(task_id: str):
+    result = AsyncResult(task_id)
+    return {"task_id": task_id, "status": result.status, "result": result.result}
+
 
 # ---------------- Anomaly History Route ---------------- #
 @app.get("/anomaly-history")
 async def anomaly_history():
     if not os.path.exists(ANOMALY_HISTORY_FILE):
-        return []  # no anomalies yet
-
+        return []
     try:
         df = pd.read_csv(ANOMALY_HISTORY_FILE)
         return df.to_dict(orient="records")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load anomaly history: {e}")
 
-
-# ---------------- Celery-based Retraining (Async) ---------------- #
-@app.post("/retrain")
-async def retrain_async(new_logs: List[LogInput]):
-    """Trigger async retraining via Celery"""
-    try:
-        logs = [item.dict() for item in new_logs]
-        task = retrain_model_task.delay(logs)
-        return {"message": "Retraining started", "task_id": task.id}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to start retraining: {e}")
-
-
-@app.get("/retrain/status/{task_id}")
-def retrain_status(task_id: str):
-    """Check retraining task status"""
-    task = retrain_model_task.AsyncResult(task_id)
-    if task.state == "PENDING":
-        return {"status": "pending"}
-    elif task.state == "SUCCESS":
-        return {"status": "completed", "result": task.result}
-    elif task.state == "FAILURE":
-        return {"status": "failed", "error": str(task.info)}
-    else:
-        return {"status": task.state}
-
+# ---------------- Overview ---------------- #
 @app.get("/overview")
 def overview():
     total_logs = anomalies = 0
@@ -139,7 +255,6 @@ def overview():
         total_logs = len(df)
         if "is_anomaly" in df.columns:
             anomalies = df["is_anomaly"].sum()
-
     return {
         "total_logs": int(total_logs),
         "anomalies": int(anomalies),
@@ -147,29 +262,67 @@ def overview():
         "active_users": 1
     }
 
-@app.get("/health")
-def health():
-    return {
-        "status": "ok",
-        "model_loaded": model is not None,
-        "model_path": MODEL_PATH,
-        "vectorizer_path": VECTORIZER_PATH
-    }
 
-@app.get("/model-info")
-def model_info():
-    if not os.path.exists(MODEL_PATH_FILE):
-        raise HTTPException(status_code=404, detail="No model found")
+# ---------------- Users & Teams ---------------- #
+USERS_FILE = "users.csv"
 
-    with open(MODEL_PATH_FILE, "r") as f:
-        model_path = f.read().strip()
+@app.post("/users")
+def add_user(user: dict):
+    """Add a new user with role and team"""
+    required = ["name", "email", "role", "team"]
+    if not all(k in user for k in required):
+        raise HTTPException(status_code=400, detail="Missing user fields")
 
-    return {
-        "status": "ok",
-        "latest_model": model_path,
-        "file_size": os.path.getsize(model_path) if os.path.exists(model_path) else 0,
-        "last_updated": datetime.fromtimestamp(os.path.getmtime(model_path), tz=timezone.utc).isoformat() if os.path.exists(model_path) else None
-    }
+    # Append new user
+    df = pd.DataFrame([{
+        "name": user["name"],
+        "email": user["email"],
+        "role": user["role"],
+        "team": user["team"],
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }])
+
+    if os.path.exists(USERS_FILE):
+        df.to_csv(USERS_FILE, mode="a", header=False, index=False)
+    else:
+        df.to_csv(USERS_FILE, index=False)
+
+    return {"status": "success", "message": f"User {user['name']} added."}
+
+
+@app.get("/users")
+def list_users():
+    """List all users"""
+    if not os.path.exists(USERS_FILE):
+        return []
+    df = pd.read_csv(USERS_FILE)
+    return df.to_dict(orient="records")
+
+
+@app.delete("/users/{email}")
+def delete_user(email: str):
+    """Delete user by email"""
+    if not os.path.exists(USERS_FILE):
+        raise HTTPException(status_code=404, detail="No users found")
+
+    df = pd.read_csv(USERS_FILE)
+    if email not in df["email"].values:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    df = df[df["email"] != email]
+    df.to_csv(USERS_FILE, index=False)
+    return {"status": "success", "message": f"User {email} deleted"}
+
+
+@app.get("/teams")
+def list_teams():
+    """Return distinct team names"""
+    if not os.path.exists(USERS_FILE):
+        return []
+    df = pd.read_csv(USERS_FILE)
+    teams = df["team"].dropna().unique().tolist()
+    return teams
+
 
 # ---------------- System Stats ---------------- #
 registry = CollectorRegistry()
@@ -185,6 +338,14 @@ def get_system_stats():
     mem = psutil.virtual_memory().percent
     disk = psutil.disk_usage('/').percent
     net_io = psutil.net_io_counters()
+
+    # Save alerts if system thresholds exceed limits
+    if cpu > 90:
+        save_event("System", "Resource Alert", "critical", f"High CPU usage detected: {cpu}%", "active")
+    if mem > 80:
+        save_event("System", "Resource Alert", "warning", f"High memory usage detected: {mem}%", "active")
+    if disk > 85:
+        save_event("System", "Resource Alert", "warning", f"High disk usage detected: {disk}%", "active")
 
     cpu_gauge.set(cpu)
     mem_gauge.set(mem)
@@ -203,3 +364,25 @@ def get_system_stats():
 @app.get("/metrics")
 def metrics():
     return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "model_loaded": model is not None,
+        "model_path": MODEL_PATH,
+        "vectorizer_path": VECTORIZER_PATH
+    }
+
+@app.get("/model-info")
+def model_info():
+    if not os.path.exists(MODEL_PATH_FILE):
+        raise HTTPException(status_code=404, detail="No model found")
+    with open(MODEL_PATH_FILE, "r") as f:
+        model_path = f.read().strip()
+    return {
+        "status": "ok",
+        "latest_model": model_path,
+        "file_size": os.path.getsize(model_path) if os.path.exists(model_path) else 0,
+        "last_updated": datetime.fromtimestamp(os.path.getmtime(model_path), tz=timezone.utc).isoformat() if os.path.exists(model_path) else None
+    }
