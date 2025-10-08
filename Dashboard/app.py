@@ -3,7 +3,8 @@ import requests
 import pandas as pd
 
 # FastAPI backend URL
-API_URL = "http://localhost:5000"
+API_URL = "http://backend:5000"
+
 
 st.set_page_config(page_title="AIOps Dashboard", layout="wide")
 
@@ -237,7 +238,7 @@ with tabs[5]:
     st.title("Users & Teams Management")
     st.write("Manage user roles, team assignments, and permissions.")
 
-    backend_url = "http://localhost:5000"  # Update if backend runs elsewhere
+    backend_url = API_URL  # Update if backend runs elsewhere
 
     # --- Add New User Section ---
     st.subheader("➕ Add New User")

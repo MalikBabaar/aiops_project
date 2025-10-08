@@ -1,11 +1,11 @@
 # celery_app.py
 from celery import Celery
+import os
 
-# Connect to RabbitMQ broker (replace 'rabbitmq' with 'localhost' if running locally)
 celery_app = Celery(
     "aiops_tasks",
-    broker="amqp://guest:guest@localhost:5672//",
-    backend="rpc://"
+    broker="amqp://guest:guest@rabbitmq:5672//",
+    backend="redis://redis:6379/0"
 )
 
 @celery_app.task

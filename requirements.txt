@@ -9,4 +9,4 @@ celery
 requests
 psutil
 prometheus_client
-
+redis

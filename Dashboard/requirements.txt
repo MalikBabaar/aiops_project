@@ -3,3 +3,4 @@ requests
 pandas
 matplotlib
 plotly
+streamlit-autorefresh

@@ -222,6 +222,7 @@ async def retrain(new_logs: List[LogInput]):
 
 
 from fastapi import BackgroundTasks
+from celery_app import celery_app
 
 @app.post("/retrain-async")
 async def retrain_async(new_logs: List[LogInput]):
@@ -231,9 +232,13 @@ async def retrain_async(new_logs: List[LogInput]):
 
 @app.get("/task-status/{task_id}")
 def get_task_status(task_id: str):
-    result = AsyncResult(task_id)
-    return {"task_id": task_id, "status": result.status, "result": result.result}
-
+    # ✅ Use the same Celery app that your worker uses
+    result = AsyncResult(task_id, app=celery_app)
+    return {
+        "task_id": task_id,
+        "status": result.status,
+        "result": result.result
+    }
 
 # ---------------- Anomaly History Route ---------------- #
 @app.get("/anomaly-history")
@@ -241,10 +246,19 @@ async def anomaly_history():
     if not os.path.exists(ANOMALY_HISTORY_FILE):
         return []
     try:
-        df = pd.read_csv(ANOMALY_HISTORY_FILE)
+        # Read CSV safely
+        df = pd.read_csv(ANOMALY_HISTORY_FILE, on_bad_lines="skip")
+
+        # Drop empty or corrupted rows
+        df.dropna(subset=["timestamp", "log"], inplace=True)
+
+        # Replace NaN with None for JSON serialization
+        df = df.where(pd.notnull(df), None)
+
         return df.to_dict(orient="records")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load anomaly history: {e}")
+
 
 # ---------------- Overview ---------------- #
 @app.get("/overview")
