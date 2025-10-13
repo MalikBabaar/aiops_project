@@ -19,6 +19,7 @@ from typing import List
 from tasks import retrain_model_task
 from celery_app import retrain_model_task
 from celery.result import AsyncResult
+from collections import defaultdict
 
 
 # ---------------- CONFIG ---------------- #
@@ -119,6 +120,36 @@ def acknowledge_event(timestamp: str):
         return {"message": f"Event {timestamp} acknowledged successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error updating event: {e}")
+    
+# -------------------Group Events ------------------ #  
+class LogEntry(BaseModel):
+    timestamp: str
+    message: str
+    level: str = "INFO"
+
+@app.post("/group-events")
+def group_events(logs: list[LogEntry]):
+    groups = defaultdict(list)
+    
+    for log in logs:
+        # Normalize log message — remove numbers, timestamps, etc.
+        pattern = re.sub(r"\d+", "", log.message)
+        key = pattern.split(" ")[0:5]  # First few words define event type
+        key = " ".join(key)
+        groups[key].append(log.dict())
+
+    grouped_events = []
+    for event_type, entries in groups.items():
+        timestamps = [datetime.fromisoformat(e["timestamp"]) for e in entries]
+        grouped_events.append({
+            "event_type": event_type,
+            "count": len(entries),
+            "first_seen": min(timestamps).isoformat(),
+            "last_seen": max(timestamps).isoformat(),
+            "sample_message": entries[0]["message"]
+        })
+
+    return grouped_events
 
 # ---------------- ANALYZE LOGS ---------------- #
 @app.post("/analyze")
@@ -425,6 +456,5 @@ if __name__ == "__main__":
         "app:app",
         host="0.0.0.0",
         port=5000,
-        reload=True,
         reload_excludes=["venv", ".git"]
     )

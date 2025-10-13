@@ -3,10 +3,11 @@ import requests
 import pandas as pd
 import plotly.express as px
 import time
+from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
 # ---------------- CONFIG ---------------- #
-API_URL = "http://backend:5000"  # FastAPI backend URL
+API_URL = "http://localhost:5000"  # FastAPI backend URL
 
 st.set_page_config(page_title="AIOps Dashboard", layout="wide")
 
@@ -47,8 +48,8 @@ if not st.session_state.authenticated:
 # ---------------- MAIN DASHBOARD ---------------- #
 else:
     # --- Sidebar ---
-    st.sidebar.title("📁 Navigation")
-    st.sidebar.write(f"👋 Welcome, {st.session_state.email}")
+    st.sidebar.title("LogIn")
+    st.sidebar.write(f"Welcome, {st.session_state.email}")
     if st.sidebar.button("Logout"):
         st.session_state.authenticated = False
         st.rerun()
@@ -60,12 +61,13 @@ else:
         "ML Model Monitoring",
         "Anomalies",
         "Events & Alerts",
+        "Event Grouping",
         "Users & Teams"
     ])
 
     # --- OVERVIEW TAB --- #
     with tabs[0]:
-        st.title("📊 AIOps Dashboard")
+        st.title("AIOps Dashboard")
         overview = get_data("/overview")
 
         col1, col2, col3, col4 = st.columns(4)
@@ -186,17 +188,33 @@ else:
 
         st.markdown("### Retrain Model with Logs")
 
-        uploaded_file = st.file_uploader("Upload logs file (CSV)", type=["csv"])
+        uploaded_file = st.file_uploader("Upload logs file (CSV, TXT, LOG)", type=["csv", "txt", "log"])
         if uploaded_file is not None:
-            df = pd.read_csv(uploaded_file)
+            df = None  # ✅ make sure df always defined
 
-            if "log" not in df.columns:
-                possible_cols = [c for c in df.columns if "log" in c.lower() or "message" in c.lower()]
-                if possible_cols:
-                    df.rename(columns={possible_cols[0]: "log"}, inplace=True)
-                else:
-                    st.error("CSV must contain a 'log' column (or similar like 'message').")
+            if uploaded_file.name.endswith(".csv"):
+                try:
+                    df = pd.read_csv(uploaded_file)
+                except Exception as e:
+                    st.error(f"Error reading CSV: {e}")
                     st.stop()
+            else:
+                try:
+                    lines = uploaded_file.read().decode("utf-8").splitlines()
+                    df = pd.DataFrame(lines, columns=["log"])
+                except Exception as e:
+                    st.error(f"Error reading text file: {e}")
+                    st.stop()
+
+            # ✅ only continue if df was created successfully
+            if df is not None:
+                if "log" not in df.columns:
+                    possible_cols = [c for c in df.columns if "log" in c.lower() or "message" in c.lower()]
+                    if possible_cols:
+                        df.rename(columns={possible_cols[0]: "log"}, inplace=True)
+                    else:
+                        st.error("File must contain a 'log' column (or similar like 'message').")
+                        st.stop()
 
             if "label" in df.columns:
                 logs = [{"log": row["log"], "label": int(row["label"])} for _, row in df.iterrows()]
@@ -229,11 +247,23 @@ else:
 
     # --- EVENTS & ALERTS TAB --- #
     with tabs[4]:
-        st.title("Events & Alerts")
-        events = get_data("/events")
+        st.title("Alert Management")
 
+        events = get_data("/events")
         if isinstance(events, list) and len(events) > 0:
             df = pd.DataFrame(events)
+            # --- Extract only the actual log message ---
+            def extract_message(full_log):
+                # Example pattern: "[timestamp] [level] message"
+                parts = full_log.split("] ")
+                if len(parts) >= 3:
+                    return "] ".join(parts[2:]).strip()
+                elif len(parts) >= 2:
+                    return parts[1].strip()
+                else:
+                    return full_log.strip()
+
+            df["message"] = df["message"].apply(extract_message)
             severity_icons = {
                 "critical": "🔴 Critical",
                 "warning": "🟠 Warning",
@@ -261,8 +291,60 @@ else:
         else:
             st.info("No events or alerts available.")
 
+    # --- GROUP EVENTS FROM LOGS TAB --- #
+        with tabs[5]:
+            st.title("Group Events from Logs")
+            st.markdown("Upload logs (CSV or TXT) to automatically group similar events")
+
+            uploaded_file = st.file_uploader("Upload logs file (CSV or TXT)", type=["csv", "txt"])
+
+            if uploaded_file is not None:
+                try:
+                    # Read the file (CSV or TXT)
+                    if uploaded_file.name.endswith(".csv"):
+                        df = pd.read_csv(uploaded_file)
+                    else:
+                        lines = uploaded_file.read().decode("utf-8").splitlines()
+                        df = pd.DataFrame({"message": lines})
+
+                    # Add missing columns
+                    if "timestamp" not in df.columns:
+                        df["timestamp"] = datetime.now().isoformat()
+                    if "level" not in df.columns:
+                        df["level"] = "INFO"
+
+                    st.subheader("Preview of Uploaded Logs")
+                    st.dataframe(df.head(), width="stretch")
+
+                    logs = df.to_dict(orient="records")
+
+                    # Only run this when button is clicked
+                    if st.button("🚀 Group Events"):
+                        with st.spinner("Grouping events..."):
+                            try:
+                                response = requests.post(f"{API_URL}/group-events", json=logs)
+                                if response.status_code == 200:
+                                    grouped = response.json()
+                                    if grouped:
+                                        st.success(f"✅ Found {len(grouped)} Event Groups")
+                                        grouped_df = pd.DataFrame(grouped)
+                                        st.dataframe(grouped_df, width="stretch")
+                                        st.bar_chart(grouped_df.set_index("event_type")["count"])
+                                    else:
+                                        st.info("No event groups found.")
+                                else:
+                                    st.error(f"Error {response.status_code}: {response.text}")
+                            except Exception as e:
+                                st.error(f"❌ API request failed: {e}")
+
+                except Exception as e:
+                    st.error(f"❌ Failed to process log file: {e}")
+
+            else:
+                st.info("📤 Please upload a log file to start grouping.")
+
     # --- USERS & TEAMS TAB --- #
-    with tabs[5]:
+    with tabs[6]:
         st.title("Users & Teams Management")
         st.write("Manage user roles, team assignments, and permissions.")
 
@@ -302,7 +384,7 @@ else:
                 if selected_team != "All":
                     df_users = df_users[df_users["team"] == selected_team]
 
-                st.dataframe(df_users, use_container_width=True)
+                st.dataframe(df_users, width="stretch")
 
                 st.subheader("🗑️ Delete a User")
                 delete_email = st.selectbox("Select User to Delete", df_users["email"].tolist())
