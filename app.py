@@ -5,6 +5,7 @@ import pandas as pd
 import psutil
 import yaml
 import traceback
+import uvicorn
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
@@ -32,6 +33,24 @@ ANOMALY_HISTORY_FILE = "anomaly_history.csv"
 MODEL_PATH_FILE = "latest_model.txt"
 VECTORIZER_PATH_FILE = "latest_vectorizer.txt"
 EVENTS_FILE = "events.csv"
+
+# Hardcoded users (for now)
+USERS = {
+    "admin": "admin",
+    "fahad@gmail.com": "fahad"
+}
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+@app.post("/login")
+def login(req: LoginRequest):
+    if req.email in USERS and USERS[req.email] == req.password:
+        return {"status": "success", "message": "Login successful"}
+    else:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
 
 def get_latest_model_and_vectorizer():
     try:
@@ -400,3 +419,12 @@ def model_info():
         "file_size": os.path.getsize(model_path) if os.path.exists(model_path) else 0,
         "last_updated": datetime.fromtimestamp(os.path.getmtime(model_path), tz=timezone.utc).isoformat() if os.path.exists(model_path) else None
     }
+
+if __name__ == "__main__":
+    uvicorn.run(
+        "app:app",
+        host="0.0.0.0",
+        port=5000,
+        reload=True,
+        reload_excludes=["venv", ".git"]
+    )
