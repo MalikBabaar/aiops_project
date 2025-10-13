@@ -6,7 +6,7 @@ import time
 from streamlit_autorefresh import st_autorefresh
 
 # ---------------- CONFIG ---------------- #
-API_URL = "http://localhost:5000"  # FastAPI backend URL
+API_URL = "http://backend:5000"  # FastAPI backend URL
 
 st.set_page_config(page_title="AIOps Dashboard", layout="wide")
 
