@@ -5,6 +5,17 @@ import plotly.express as px
 import time
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
+from mlflow.tracking import MlflowClient
+from pathlib import Path
+from PIL import Image
+import json
+import mlflow
+import sys
+
+# Add trainer folder to Python path
+sys.path.append(str(Path(__file__).resolve().parent.parent / "malik" / "malik" / "trainer"))
+
+from train import retrain_model
 
 # ---------------- CONFIG ---------------- #
 API_URL = "http://localhost:5000"  # FastAPI backend URL
@@ -62,7 +73,8 @@ else:
         "Anomalies",
         "Events & Alerts",
         "Event Grouping",
-        "Users & Teams"
+        "Users & Teams",
+        "ML-Flow Metrices"
     ])
 
     # --- OVERVIEW TAB --- #
@@ -176,64 +188,43 @@ else:
             )
             st.plotly_chart(fig_net, config={"responsive": True}, key="network_chart")
 
-    # --- ML MODEL MONITORING TAB --- #
+    
+        # --- ML MODEL MONITORING TAB --- #
     with tabs[2]:
         st.title("ML Model Monitoring")
-        if st.button("Get Model Info"):
-            response = requests.get(f"{API_URL}/model-info")
-            if response.status_code == 200:
-                st.json(response.json())
-            else:
-                st.error(f"Error fetching model info: {response.status_code} - {response.text}")
 
-        st.markdown("### Retrain Model with Logs")
-
-        uploaded_file = st.file_uploader("Upload logs file (CSV, TXT, LOG)", type=["csv", "txt", "log"])
+        uploaded_file = st.file_uploader("Upload CSV/TXT logs file", type=["csv", "txt"])
         if uploaded_file is not None:
-            df = None  # ✅ make sure df always defined
+            try:
+                df_logs = pd.read_csv(uploaded_file, engine="python", on_bad_lines="skip")
+            except Exception:
+                df_logs = pd.read_csv(uploaded_file, names=["log"], engine="python", on_bad_lines="skip")
 
-            if uploaded_file.name.endswith(".csv"):
-                try:
-                    df = pd.read_csv(uploaded_file)
-                except Exception as e:
-                    st.error(f"Error reading CSV: {e}")
-                    st.stop()
-            else:
-                try:
-                    lines = uploaded_file.read().decode("utf-8").splitlines()
-                    df = pd.DataFrame(lines, columns=["log"])
-                except Exception as e:
-                    st.error(f"Error reading text file: {e}")
-                    st.stop()
+            # Ensure 'log' column exists
+            if "log" not in df_logs.columns:
+                if len(df_logs.columns) == 1:
+                    df_logs = df_logs.rename(columns={df_logs.columns[0]: "log"})
+                else:
+                    df_logs["log"] = df_logs.astype(str).agg(" | ".join, axis=1)
 
-            # ✅ only continue if df was created successfully
-            if df is not None:
-                if "log" not in df.columns:
-                    possible_cols = [c for c in df.columns if "log" in c.lower() or "message" in c.lower()]
-                    if possible_cols:
-                        df.rename(columns={possible_cols[0]: "log"}, inplace=True)
-                    else:
-                        st.error("File must contain a 'log' column (or similar like 'message').")
-                        st.stop()
+            st.dataframe(df_logs.head(5))
 
-            if "label" in df.columns:
-                logs = [{"log": row["log"], "label": int(row["label"])} for _, row in df.iterrows()]
-            else:
-                logs = [{"log": l} for l in df["log"].tolist()]
+            # Retrain Button
+            if st.button("🔄 Retrain Model"):
+                st.info("Retraining model...")
+                retrain_result = retrain_model(df_logs)
+                st.session_state['retrain_result'] = retrain_result
+                st.success("✅ Model retrained successfully!")
 
-            st.write("Preview of uploaded logs:")
-            st.dataframe(df.head(), width="stretch")
+                # --- Show model metrics here only ---
+                st.subheader("📊 Model Metrics")
+                st.json({
+                    "Accuracy": retrain_result.get("accuracy"),
+                    "Precision": retrain_result.get("precision"),
+                    "Recall": retrain_result.get("recall"),
+                    "F1 Score": retrain_result.get("f1_score")
+                })
 
-            if st.button("Retrain"):
-                try:
-                    response = requests.post(f"{API_URL}/retrain", json=logs)
-                    if response.status_code == 200:
-                        st.success("Retrain Result:")
-                        st.json(response.json())
-                    else:
-                        st.error(f"Error: {response.status_code} - {response.text}")
-                except Exception as e:
-                    st.error(f"Retrain failed: {e}")
 
     # --- ANOMALIES TAB --- #
     with tabs[3]:
@@ -351,7 +342,7 @@ else:
         backend_url = API_URL
 
         # --- Add New User Section --- #
-        st.subheader("➕ Add New User")
+        st.subheader(" Add New User")
         with st.form("add_user_form"):
             name = st.text_input("Full Name")
             email = st.text_input("Email Address")
@@ -398,3 +389,45 @@ else:
                 st.info("No users found yet.")
         else:
             st.error("⚠️ Failed to load users from backend.")
+
+                # --- ML-FLOW METRICS TAB --- #
+    with tabs[7] if len(tabs) > 7 else st.expander("ML-Flow Metrics"):
+        st.title("📊 ML-Flow Training Metrics")
+
+        if "retrain_result" in st.session_state:
+            retrain_result = st.session_state['retrain_result']
+            st.markdown(f"**MLflow Run ID:** {retrain_result['run_id']}")
+
+            # Remove model metrics from here
+            st.subheader("⚡ Anomaly Metrics")
+            st.write({
+                "Total Records": retrain_result["total_records"],
+                "Anomaly Count": retrain_result["anomaly_count"],
+                "Anomaly Rate": retrain_result["anomaly_rate"],
+                "Duplicate Anomalies": retrain_result["duplicate_anomalies"],
+                "Rare Query Anomalies": retrain_result["rare_query_anomalies"],
+                "Atypical Combo Anomalies": retrain_result["atypical_combo_anomalies"],
+                "Threshold": retrain_result.get("threshold", 0)
+            })
+
+            st.markdown("### 📈 Analytics Plots")
+            plots_paths = retrain_result.get("plots_paths", {})
+
+            if plots_paths:
+                plots_items = list(plots_paths.items())
+                num_cols = 3  # show 3 plots per row
+                for i in range(0, len(plots_items), num_cols):
+                    cols = st.columns(num_cols)
+                    for j, (title, path) in enumerate(plots_items[i:i+num_cols]):
+                        with cols[j]:
+                            st.subheader(title)
+                            if path.endswith(".csv"):
+                                st.dataframe(pd.read_csv(path))
+                            else:
+                                st.image(path, width="stretch")
+            else:
+                st.info("No plots available yet.")
+        else:
+            st.info("No retrain results available. Please retrain a model in ML Model Monitoring tab.")
+
+   

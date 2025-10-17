@@ -19,9 +19,23 @@ from typing import List
 from tasks import retrain_model_task
 from celery_app import retrain_model_task
 from celery.result import AsyncResult
+from fastapi.staticfiles import StaticFiles
+from mlflow.tracking import MlflowClient
 from collections import defaultdict
+import sys
+from pathlib import Path
 
 
+# Add trainer folder to Python path
+sys.path.append(str(Path(__file__).resolve().parent / "malik" / "malik" / "trainer"))
+
+from train import retrain_model
+
+# Add outer project folder to sys.path
+sys.path.append(str(Path(__file__).parent.resolve()))
+sys.path.append(str(Path(__file__).parent / "malik" / "malik"))
+
+from trainer.mlflow_logger import log_mlflow_metrics
 # ---------------- CONFIG ---------------- #
 load_dotenv()
 with open("config.yaml", "r") as f:
@@ -37,7 +51,7 @@ EVENTS_FILE = "events.csv"
 
 # Hardcoded users (for now)
 USERS = {
-    "admin": "admin",
+    "admin@gmail.com": "admin",
     "fahad@gmail.com": "fahad"
 }
 
@@ -194,7 +208,9 @@ async def analyze(payload: LogInput):
 
     return JSONResponse(content=result)
 
-@app.post("/retrain")
+
+
+'''@app.post("/retrain")
 async def retrain(new_logs: List[LogInput]):
     try:
         if not new_logs:
@@ -252,6 +268,30 @@ async def retrain(new_logs: List[LogInput]):
             except Exception:
                 pass  # ignore label errors for unlabeled data
 
+                # ------------------ MLflow Logging ------------------ #
+        # Define artifacts directory (must match Streamlit)
+        OUTDIR = Path("malik/malik/trainer/run")
+        OUTDIR.mkdir(parents=True, exist_ok=True)  # ensure folder exists
+
+        # Define metrics
+        metrics = {
+            "threshold": 0.05,
+            "anomaly_count": anomalies,
+            "anomaly_rate": anomaly_ratio,
+            "precision": prec,
+            "recall": rec,
+            "f1": f1,
+            "duplicate_anomalies": 0,
+            "rare_query_anomalies": 0,
+            "atypical_combo_anomalies": 0,
+            "avg_gap_anomalies": 0,
+            "feature_rates": {}
+        }
+
+        # Save metrics + artifacts to OUTDIR
+        log_mlflow_metrics(metrics, OUTDIR)
+        # ---------------------------------------------------- #
+
         return JSONResponse(content={
             "status": "success",
             "new_model_version": version,
@@ -264,6 +304,27 @@ async def retrain(new_logs: List[LogInput]):
             "detected_anomalies": anomalies,
             "anomaly_ratio": anomaly_ratio
         })
+
+    except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        raise HTTPException(status_code=500, detail=f"Retrain failed: {e}\n{error_detail}")'''
+
+@app.post("/retrain")
+async def retrain(new_logs: List[LogInput]):
+    try:
+        if not new_logs:
+            raise HTTPException(status_code=400, detail="No logs provided for retraining.")
+
+        # Convert input logs to DataFrame
+        df_features = pd.DataFrame([item.dict() for item in new_logs])
+        if "log" not in df_features.columns:
+            raise HTTPException(status_code=400, detail="Logs must contain a 'log' field.")
+
+        # Call your train.py retrain_model function
+        result = retrain_model(df_features)  # ✅ centralized training + MLflow logging
+
+        return JSONResponse(content=result)
 
     except Exception as e:
         import traceback
@@ -289,6 +350,65 @@ def get_task_status(task_id: str):
         "status": result.status,
         "result": result.result
     }
+
+RUN_SUMMARY_FILE = Path("malik/malik/trainer/run/run_summary.json")
+
+@app.get("/train-summary")
+def train_summary():
+    if not RUN_SUMMARY_FILE.exists():
+        return JSONResponse(content={"error": "run_summary.json not found"}, status_code=404)
+    try:
+        with open(RUN_SUMMARY_FILE) as f:
+            summary = json.load(f)
+        return summary
+    except Exception as e:
+        return JSONResponse(content={"error": str(e)}, status_code=500)
+    
+
+# Define your artifacts directory (adjust to your project)
+ARTIFACTS_DIR = Path("malik/malik/trainer/run")
+ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static-artifacts", StaticFiles(directory=ARTIFACTS_DIR), name="static-artifacts")
+
+@app.get("/mlflow-metrics")
+def mlflow_metrics():
+    """
+    Return latest MLflow run metrics and artifacts safely.
+    """
+    try:
+        client = MlflowClient()
+
+        # Use default experiment if not found
+        experiment_name = "aiops-anomaly-intelligence"
+        exp = client.get_experiment_by_name(experiment_name)
+        if not exp:
+            return JSONResponse({"error": f"Experiment '{experiment_name}' not found."}, status_code=404)
+
+        runs = client.search_runs(exp.experiment_id, order_by=["start_time desc"], max_results=1)
+        if not runs:
+            return JSONResponse({"error": "No MLflow runs found."}, status_code=404)
+
+        run = runs[0]
+        run_id = run.info.run_id
+        metrics = run.data.metrics or {}
+
+        # List artifacts if available
+        artifact_paths = []
+        try:
+            artifacts = client.list_artifacts(run_id)
+            artifact_paths = [f.path for f in artifacts if f.path.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        except Exception:
+            pass  # Ignore if no artifacts found
+
+        return {
+            "run_id": run_id,
+            "metrics": metrics,
+            "artifacts": artifact_paths
+        }
+
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
 
 # ---------------- Anomaly History Route ---------------- #
 @app.get("/anomaly-history")

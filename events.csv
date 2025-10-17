@@ -17,8 +17,34 @@ timestamp,source,type,severity,message,status
 2025-10-13T11:13:29.504066+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,acknowledged
 2025-10-13T11:13:29.883667+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,acknowledged
 2025-10-13T11:13:30.358477+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,acknowledged
-2025-10-13T11:13:30.554933+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
+2025-10-13T11:13:30.554933+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,acknowledged
 2025-10-13T11:13:30.706228+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
 2025-10-13T11:13:30.870934+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
 2025-10-13T11:23:04.497628+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
 2025-10-13T12:32:34.207305+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
+2025-10-15T11:55:52.055490+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
+2025-10-15T14:14:06.770182+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
+2025-10-15T14:14:10.476573+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
+2025-10-15T15:16:38.218026+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
+2025-10-16T06:21:17.806068+00:00,System,Resource Alert,critical,High CPU usage detected: 98.5%,active
+2025-10-16T09:47:37.310131+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
+2025-10-16T09:47:43.049730+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
+2025-10-16T10:19:23.719358+00:00,System,Resource Alert,critical,High CPU usage detected: 93.9%,active
+2025-10-16T10:33:29.549733+00:00,System,Resource Alert,critical,High CPU usage detected: 94.5%,active
+2025-10-16T11:14:37.757056+00:00,System,Resource Alert,warning,High memory usage detected: 81.3%,active
+2025-10-16T11:15:27.532406+00:00,System,Resource Alert,warning,High memory usage detected: 82.0%,active
+2025-10-16T11:15:47.752140+00:00,System,Resource Alert,warning,High memory usage detected: 80.9%,active
+2025-10-16T11:15:52.201048+00:00,System,Resource Alert,warning,High memory usage detected: 80.7%,active
+2025-10-16T11:20:51.702432+00:00,System,Resource Alert,warning,High memory usage detected: 80.8%,active
+2025-10-16T11:21:51.737104+00:00,System,Resource Alert,warning,High memory usage detected: 83.0%,active
+2025-10-16T13:54:03.570582+00:00,JBoss Logs,Anomaly,critical,[2025-09-22 14:35:17] ERROR [org.jboss.ejb3] – Transaction timeout for UserSessionBean,active
+2025-10-16T13:54:04.603947+00:00,System,Resource Alert,warning,High memory usage detected: 82.2%,active
+2025-10-16T13:54:20.901448+00:00,System,Resource Alert,warning,High memory usage detected: 81.8%,active
+2025-10-16T13:54:28.153909+00:00,System,Resource Alert,warning,High memory usage detected: 82.2%,active
+2025-10-16T13:54:40.967890+00:00,System,Resource Alert,warning,High memory usage detected: 81.8%,active
+2025-10-16T13:54:56.474170+00:00,System,Resource Alert,warning,High memory usage detected: 82.7%,active
+2025-10-16T13:55:04.098589+00:00,System,Resource Alert,warning,High memory usage detected: 81.8%,active
+2025-10-16T13:55:17.934199+00:00,System,Resource Alert,warning,High memory usage detected: 82.8%,active
+2025-10-16T13:55:22.710504+00:00,System,Resource Alert,warning,High memory usage detected: 81.8%,active
+2025-10-16T13:55:32.916020+00:00,System,Resource Alert,warning,High memory usage detected: 81.8%,active
+2025-10-16T13:56:03.672526+00:00,System,Resource Alert,warning,High memory usage detected: 80.5%,active
