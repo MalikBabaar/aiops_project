@@ -14,18 +14,39 @@ import sys
 
 
 # ---------------- MLflow Setup ----------------
-mlruns_path = Path("C:/aiops_project/mlruns")
-mlruns_path.mkdir(parents=True, exist_ok=True)
+#mlruns_path = Path("C:/aiops_project/mlruns")
+#mlruns_path.mkdir(parents=True, exist_ok=True)
 
-mlflow.set_tracking_uri(f"file:///{mlruns_path.as_posix()}")
-mlflow.set_experiment("aiops-anomaly-intelligence")
+#mlflow.set_tracking_uri(f"file:///{mlruns_path.as_posix()}")
+#mlflow.set_experiment("aiops-anomaly-intelligence")
 
-mlflow.sklearn.autolog(log_input_examples=True, log_model_signatures=True, log_models=True, silent=True)
+#mlflow.sklearn.autolog(log_input_examples=True, log_model_signatures=True, log_models=True, silent=True)
 
+MLFLOW_URI = "http://mlflow:5001"
+EXPERIMENT_NAME = "aiops-anomaly-intelligence"
+
+mlflow.set_tracking_uri(MLFLOW_URI)
+client = MlflowClient()
+try:
+    exp = client.get_experiment_by_name(EXPERIMENT_NAME)
+    if exp is None:
+        client.create_experiment(EXPERIMENT_NAME)
+    mlflow.set_experiment(EXPERIMENT_NAME)
+except Exception as e:
+    print(f"[⚠️ MLflow Warning] Could not create/set experiment: {e}")
+    mlflow.set_experiment(EXPERIMENT_NAME)
 
 def retrain_model(df_logs: pd.DataFrame = None, input_paths: list = None, contamination: float = 0.05, outdir: str = "./run"):
     """
-    Full retraining pipeline for IsolationForest, analytics, metrics, MLflow logging.
+    Full retraining pipeline for IsolationForest, including:
+    - Data cleaning
+    - Feature engineering
+    - Scaling
+    - Model training
+    - Metrics computation
+    - Plot generation
+    - MLflow logging
+    
     Can take a DataFrame directly or input file paths.
     Returns a dictionary with metrics, run_id, model & plots paths.
     """
@@ -46,27 +67,44 @@ def retrain_model(df_logs: pd.DataFrame = None, input_paths: list = None, contam
             raise FileNotFoundError(f"No input files found. Checked: {input_paths}")
         df_logs = pd.concat(frames, ignore_index=True)
 
-    # --- Ensure essential columns exist ---
+    # --- 1️⃣ Data Cleaning ---
+    # Ensure essential columns exist
     for col in ["service", "query", "request_id", "timestamp", "log"]:
         if col not in df_logs.columns:
             df_logs[col] = "unknown" if col not in ["timestamp", "log"] else pd.Timestamp.now() if col=="timestamp" else ""
 
-    # --- Build features ---
+    # Remove exact duplicates
+    df_logs.drop_duplicates(subset=["request_id"], inplace=True, ignore_index=True)
+
+    # Convert timestamp to datetime
+    df_logs["timestamp"] = pd.to_datetime(df_logs["timestamp"], errors="coerce")
+    df_logs["timestamp"] = df_logs["timestamp"].fillna(pd.Timestamp.now())
+
+    # Normalize text
+    df_logs["log"] = df_logs["log"].astype(str).str.lower().str.strip()
+
+    # Ensure binary columns exist and are 0/1
+    for col in BINARY_FEATS:
+        if col not in df_logs.columns:
+            df_logs[col] = 0
+        df_logs[col] = df_logs[col].astype(int)
+
+    # --- 2️⃣ Feature Engineering ---
     df_logs, freq_table = build_features(df_logs)
 
-    # --- Scale features ---
+    # --- 3️⃣ Scale features ---
     feats = df_logs[ALL_FEATS].values
     scaler = StandardScaler()
     feats_scaled = scaler.fit_transform(feats)
 
-    # --- Train IsolationForest ---
+    # --- 4️⃣ Train IsolationForest ---
     model = IsolationForest(contamination=contamination, random_state=RANDOM_STATE)
     model.fit(feats_scaled)
     df_logs["anomaly_score"] = -model.score_samples(feats_scaled)
     thr = float(np.quantile(df_logs["anomaly_score"], 1 - contamination))
     df_logs["anomaly_flag"] = (df_logs["anomaly_score"] >= thr).astype(int)
 
-    # --- Compute metrics (pseudo if no labels) ---
+    # --- 5️⃣ Compute metrics ---
     if "label" in df_logs.columns and df_logs["label"].notna().any():
         y_true = df_logs["label"].astype(int).values
         y_pred = df_logs["anomaly_flag"].values
@@ -83,7 +121,7 @@ def retrain_model(df_logs: pd.DataFrame = None, input_paths: list = None, contam
         recall = recall_score(y_pseudo, y_pred, zero_division=0)
         f1 = f1_score(y_pseudo, y_pred, zero_division=0)
 
-    # --- Prepare plots ---
+    # --- 6️⃣ Prepare plots ---
     plots_paths = {}
     save_feature_correlation(df_logs, outdir); plots_paths["Extended Feature Correlation Heatmap"] = str(outdir / "feature_corr.png")
     save_anomaly_bursts(df_logs, outdir); plots_paths["Anomaly Bursts Over Time"] = str(outdir / "anomaly_bursts.png")
@@ -91,14 +129,12 @@ def retrain_model(df_logs: pd.DataFrame = None, input_paths: list = None, contam
     plot_rare_queries(df_logs, outdir); plots_paths["Rare Queries and Anomalies"] = str(outdir / "rare_queries.png")
     plot_gap_anomalies(df_logs, outdir); plots_paths["Time Gaps Between Logs (Anomalies Only)"] = str(outdir / "gap_anomalies.png")
     plot_combo_anomalies(df_logs, outdir); plots_paths["Atypical Error + Rare Query Combinations"] = str(outdir / "combo_anomalies.png")
-    # remove sample anomalies if not needed
-    # log_sample_anomalies(df_logs, outdir); plots_paths["Sample Detected Anomalies"] = str(outdir / "sample_anomalies.csv")
 
-    # --- Save model & vectorizer ---
+    # --- 7️⃣ Save model & vectorizer ---
     joblib.dump(model, outdir / "model.joblib")
     joblib.dump(TfidfVectorizer(max_features=5000).fit(df_logs["log"]), outdir / "vectorizer.joblib")
 
-    # --- MLflow logging ---
+    # --- 8️⃣ MLflow logging ---
     mlflow.set_experiment("aiops-anomaly-intelligence")
     with mlflow.start_run() as run:
         mlflow.log_param("contamination", contamination)
@@ -113,6 +149,7 @@ def retrain_model(df_logs: pd.DataFrame = None, input_paths: list = None, contam
         for path in plots_paths.values():
             mlflow.log_artifact(path)
 
+    # --- 9️⃣ Return results ---
     return {
         "run_id": run.info.run_id,
         "precision": precision,
@@ -128,7 +165,6 @@ def retrain_model(df_logs: pd.DataFrame = None, input_paths: list = None, contam
         "model_file": str(outdir / "model.joblib"),
         "vectorizer_file": str(outdir / "vectorizer.joblib")
     }
-
 
 
 RANDOM_STATE = 42

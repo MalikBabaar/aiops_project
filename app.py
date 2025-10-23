@@ -154,16 +154,25 @@ def group_events(logs: list[LogEntry]):
 
     grouped_events = []
     for event_type, entries in groups.items():
-        timestamps = [datetime.fromisoformat(e["timestamp"]) for e in entries]
-        grouped_events.append({
-            "event_type": event_type,
-            "count": len(entries),
-            "first_seen": min(timestamps).isoformat(),
-            "last_seen": max(timestamps).isoformat(),
-            "sample_message": entries[0]["message"]
-        })
+        # Convert timestamps robustly
+        timestamps = []
+        for e in entries:
+            try:
+                timestamps.append(pd.to_datetime(e["timestamp"]))
+            except Exception:
+                continue
+
+        if timestamps:  # Only include if we have valid timestamps
+            grouped_events.append({
+                "event_type": event_type,
+                "count": len(entries),
+                "first_seen": min(timestamps).isoformat(),
+                "last_seen": max(timestamps).isoformat(),
+                "sample_message": entries[0]["message"]
+            })
 
     return grouped_events
+
 
 # ---------------- ANALYZE LOGS ---------------- #
 @app.post("/analyze")

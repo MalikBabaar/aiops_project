@@ -219,7 +219,7 @@ else:
                 # --- Show model metrics here only ---
                 st.subheader("📊 Model Metrics")
                 st.json({
-                    "Accuracy": retrain_result.get("accuracy"),
+                    #"Accuracy": retrain_result.get("accuracy"),
                     "Precision": retrain_result.get("precision"),
                     "Recall": retrain_result.get("recall"),
                     "F1 Score": retrain_result.get("f1_score")
