@@ -1,6 +1,21 @@
+# --- Core Dependencies ---
 streamlit
-requests
 pandas
-matplotlib
+requests
+python-dotenv
+PyYAML
+pathlib
+pillow
+
+# --- Visualization ---
 plotly
+
+# --- MLflow Client ---
+mlflow
+
+# --- Auto-refresh plugin ---
 streamlit-autorefresh
+
+# --- Miscellaneous ---
+numpy
+

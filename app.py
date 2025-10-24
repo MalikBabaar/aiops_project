@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_client import Gauge, CollectorRegistry, generate_latest, CONTENT_TYPE_LATEST
 from sklearn.ensemble import IsolationForest
 from typing import List
-from tasks import retrain_model_task
+from malik.malik.trainer.train import retrain_model
 from celery_app import retrain_model_task
 from celery.result import AsyncResult
 from fastapi.staticfiles import StaticFiles

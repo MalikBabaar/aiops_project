@@ -1,12 +1,34 @@
+# --- Core Frameworks ---
 fastapi
 uvicorn[standard]
-joblib
+
+# --- Data Science & ML ---
 pandas
-python-dotenv
 scikit-learn
-PyYAML
+joblib
+numpy
+
+# --- MLflow for experiment tracking ---
+mlflow
+
+# --- Task Queue & Messaging ---
 celery
-requests
-psutil
-prometheus_client
 redis
+kombu
+
+# --- Environment & Config ---
+python-dotenv
+PyYAML==6.0.2
+
+# --- Monitoring & Metrics ---
+prometheus-client
+psutil
+
+# --- Visualization (optional but useful for reports) ---
+seaborn
+matplotlib
+
+# --- Utilities ---
+requests
+pydantic
+

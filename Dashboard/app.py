@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 import time
+import numpy as np
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 from mlflow.tracking import MlflowClient
@@ -11,15 +12,30 @@ from PIL import Image
 import json
 import mlflow
 import sys
+import os
 
 # Add trainer folder to Python path
-sys.path.append(str(Path(__file__).resolve().parent.parent / "malik" / "malik" / "trainer"))
+#sys.path.append(str(Path(__file__).resolve().parent.parent / "malik" / "malik" / "trainer"))
 
-from train import retrain_model
+API_URL = "http://backend:5000"  # FastAPI backend URL
+
+
+def retrain_model(dataset_path):
+    """Call FastAPI retrain endpoint instead of local import"""
+    logs_data = df_logs.to_dict(orient="records")
+    try:
+        #response = requests.post(f"{API_URL}/retrain", json={"dataset_path": dataset_path})
+        response = requests.post(f"{API_URL}/retrain", json=logs_data, timeout=300)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"Retraining failed: {response.text}")
+            return None
+    except Exception as e:
+        st.error(f"Error connecting to backend: {e}")
+        return None
 
 # ---------------- CONFIG ---------------- #
-API_URL = "http://localhost:5000"  # FastAPI backend URL
-
 st.set_page_config(page_title="AIOps Dashboard", layout="wide")
 
 
@@ -232,7 +248,7 @@ else:
         history = get_data("/anomaly-history")
         if history and isinstance(history, list) and len(history) > 0:
             df = pd.DataFrame(history)
-            st.dataframe(df, width="stretch")
+            st.dataframe(df, width=1000)
         else:
             st.info("No anomalies detected yet.")
 
@@ -262,7 +278,7 @@ else:
             }
             df["severity"] = df["severity"].apply(lambda x: severity_icons.get(str(x).lower(), x))
             st.subheader("Alert History")
-            st.dataframe(df, width="stretch")
+            st.dataframe(df, width=1000)
 
             st.markdown("---")
             st.subheader("Acknowledge Alert")
@@ -305,7 +321,7 @@ else:
                         df["level"] = "INFO"
 
                     st.subheader("Preview of Uploaded Logs")
-                    st.dataframe(df.head(), width="stretch")
+                    st.dataframe(df.head(), width=1000)
 
                     logs = df.to_dict(orient="records")
 
@@ -375,7 +391,7 @@ else:
                 if selected_team != "All":
                     df_users = df_users[df_users["team"] == selected_team]
 
-                st.dataframe(df_users, width="stretch")
+                st.dataframe(df_users, width=1000)
 
                 st.subheader("🗑️ Delete a User")
                 delete_email = st.selectbox("Select User to Delete", df_users["email"].tolist())
@@ -424,10 +440,8 @@ else:
                             if path.endswith(".csv"):
                                 st.dataframe(pd.read_csv(path))
                             else:
-                                st.image(path, width="stretch")
+                                st.image(path, width=800)
             else:
                 st.info("No plots available yet.")
         else:
             st.info("No retrain results available. Please retrain a model in ML Model Monitoring tab.")
-
-   

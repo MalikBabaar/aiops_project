@@ -1,4 +1,7 @@
 services:
+  # -----------------------
+  # RabbitMQ (Message Broker)
+  # -----------------------
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq
@@ -12,6 +15,9 @@ services:
       - aiops_net
     restart: always
 
+  # -----------------------
+  # Redis (Celery Backend)
+  # -----------------------
   redis:
     image: redis:7
     container_name: redis
@@ -21,24 +27,54 @@ services:
       - aiops_net
     restart: always
 
+  # -----------------------
+  # MLflow Tracking Server
+  # -----------------------
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.16.2
+    container_name: mlflow_server
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:///mlflow.db
+      --default-artifact-root /mlflow/artifacts
+      --host 0.0.0.0
+      --port 5001
+    volumes:
+      - ./mlflow_data:/mlflow
+    ports:
+      - "5001:5001"
+    networks:
+      - aiops_net
+    restart: always
+
+  # -----------------------
+  # FastAPI Backend
+  # -----------------------
   backend:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: fastapi_app
-    command: uvicorn app:app --host 0.0.0.0 --port 5000
+    command: uvicorn app:app --host 0.0.0.0 --port 5000 --reload
     ports:
       - "5000:5000"
     depends_on:
       - rabbitmq
       - redis
+      - mlflow
     environment:
       - CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - MLFLOW_TRACKING_URI=http://mlflow:5001
+    volumes:
+      - .:/app   # ✅ gives FastAPI access to malik/malik/trainer
     networks:
       - aiops_net
     restart: always
 
+  # -----------------------
+  # Celery Worker
+  # -----------------------
   celery_worker:
     build:
       context: .
@@ -51,10 +87,16 @@ services:
     environment:
       - CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - MLFLOW_TRACKING_URI=http://mlflow:5001
+    volumes:
+      - .:/app   # ✅ gives Celery access to malik/malik/trainer/train.py
     networks:
       - aiops_net
     restart: always
 
+  # -----------------------
+  # Flower Dashboard (Celery Monitoring)
+  # -----------------------
   flower:
     image: mher/flower
     container_name: flower
@@ -71,6 +113,9 @@ services:
       - aiops_net
     restart: always
 
+  # -----------------------
+  # Streamlit Dashboard
+  # -----------------------
   streamlit:
     build:
       context: ./Dashboard
@@ -80,9 +125,36 @@ services:
       - "8501:8501"
     depends_on:
       - backend
+      - mlflow
+    environment:
+      - BACKEND_URL=http://backend:5000
+      - MLFLOW_TRACKING_URI=http://mlflow:5001
     networks:
       - aiops_net
+    restart: always
 
+  # -----------------------
+  # Trainer API (train.py / api.py)
+  # -----------------------
+  trainer:
+    build:
+      context: ./malik/malik/trainer
+      dockerfile: Dockerfile
+    container_name: trainer_api
+    command: uvicorn api:app --host 0.0.0.0 --port 9000
+    ports:
+      - "9000:9000"
+    depends_on:
+      - mlflow
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5001
+    networks:
+      - aiops_net
+    restart: always
+
+# -----------------------
+# Network Configuration
+# -----------------------
 networks:
   aiops_net:
     driver: bridge

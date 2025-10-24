@@ -1,72 +1,124 @@
-# trainer/mlflow_logger.py
+from __future__ import annotations
 from pathlib import Path
-import mlflow
+from typing import Dict, Any, Iterable, Optional
 import json
-import matplotlib.pyplot as plt
+import numbers
+import mlflow
 
-def log_mlflow_metrics(metrics: dict, outdir: Path):
+
+def _is_number(x: Any) -> bool:
+    """Return True for int/float-like values (incl. numpy scalar types)."""
+    if isinstance(x, numbers.Number):
+        return True
+    try:
+        # attempt float cast for numpy scalars
+        float(x)
+        return True
+    except Exception:
+        return False
+
+
+def _safe_log_metrics(d: Dict[str, Any]) -> None:
     """
-    Log training metrics, model metrics, and analytics to MLflow,
-    save a JSON summary, and create basic plots for dashboard display.
+    Log only numeric metrics to MLflow; ignore keys with None / non-numeric values.
     """
-    # Ensure output directory exists
+    numeric = {}
+    for k, v in d.items():
+        if v is None:
+            continue
+        if _is_number(v):
+            try:
+                numeric[k] = float(v)
+            except Exception:
+                # skip non-castable values silently
+                pass
+    if numeric:
+        mlflow.log_metrics(numeric)
+
+
+def _log_artifacts_if_exist(paths: Iterable[Path]) -> None:
+    """Best-effort logging of artifacts; skip any that are missing."""
+    for p in paths:
+        try:
+            if p and Path(p).exists():
+                mlflow.log_artifact(str(p))
+        except Exception:
+            # never fail the run because of artifact upload
+            pass
+
+
+def log_mlflow_metrics(
+    metrics: Dict[str, Any],
+    outdir: Path,
+    experiment_name: str = "aiops-anomaly-intelligence",
+    extra_artifacts: Optional[Iterable[Path]] = None,
+) -> Optional[str]:
+    """
+    Log training and analytics outputs to MLflow and persist run_summary.json.
+
+    Parameters
+    ----------
+    metrics : dict
+        Should include keys like: threshold, anomaly_count, anomaly_rate,
+        precision, recall, f1, duplicate_anomalies, rare_query_anomalies,
+        atypical_combo_anomalies, total_records, etc.
+    outdir : Path
+        Directory where the pipeline saved plots and files.
+    experiment_name : str
+        MLflow experiment name (defaults to 'aiops-anomaly-intelligence').
+    extra_artifacts : iterable of Path, optional
+        Any additional files to attach (if they exist).
+
+    Returns
+    -------
+    run_id : Optional[str]
+        The MLflow run id if available (None if something prevented retrieval).
+    """
+    outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # --- MLflow logging ---
-    mlflow.set_experiment("aiops-anomaly-intelligence")
-    with mlflow.start_run():
-        # General metrics
-        general_metrics = {
-            "threshold": metrics.get("threshold", 0),
-            "anomaly_count": metrics.get("anomaly_count", 0),
-            "anomaly_rate": metrics.get("anomaly_rate", 0)
-        }
-        # Include feature rates if present
-        if "feature_rates" in metrics and isinstance(metrics["feature_rates"], dict):
-            general_metrics.update(metrics["feature_rates"])
-        mlflow.log_metrics(general_metrics)
+    # Persist/refresh run_summary.json on disk (helpful for offline debugging)
+    summary_path = outdir / "run_summary.json"
+    try:
+        with open(summary_path, "w") as f:
+            json.dump(metrics, f, indent=2)
+    except Exception:
+        # Do not interrupt MLflow logging if local write fails
+        pass
 
-        # Classification metrics
-        for metric in ["precision", "recall", "f1", "accuracy"]:
-            value = metrics.get(metric)
-            if value is not None:  # only log if value exists
-                mlflow.log_metric(metric, value)
+    # Start the MLflow run and log
+    mlflow.set_experiment(experiment_name)
+    run_id: Optional[str] = None
+    with mlflow.start_run() as run:
+        # 1) General / numeric metrics
+        _safe_log_metrics(metrics)
 
-        # Analytics metrics
-        for key in ["duplicate_anomalies", "rare_query_anomalies",
-                    "atypical_combo_anomalies", "avg_gap_anomalies"]:
-            if key in metrics:
-                mlflow.log_metric(key, metrics[key])
+        # 2) Attach all known artifacts from the pipeline (if present)
+        default_artifacts = [
+            outdir / "feature_corr.png",
+            outdir / "anomaly_bursts.png",
+            outdir / "duplicate_ids.png",
+            outdir / "rare_queries.png",
+            outdir / "gap_anomalies.png",
+            outdir / "combo_anomalies.png",
+            outdir / "sample_anomalies.csv",
+            outdir / "scored.csv",
+            outdir / "model.joblib",
+            outdir / "scaler.joblib",
+            outdir / "freq_table.parquet",
+            summary_path,
+        ]
 
-        # --- Save JSON summary ---
-        summary_file = outdir / "run_summary.json"
-        with open(summary_file, "w") as f:
-            json.dump(metrics, f, indent=4)
+        # Include any extra artifacts if the caller passes them
+        if extra_artifacts:
+            default_artifacts.extend(list(extra_artifacts))
 
-        # --- Create placeholder plots ---
-        feature_corr_file = outdir / "feature_corr.png"
-        if not feature_corr_file.exists():
-            plt.figure(figsize=(5,4))
-            plt.title("Feature Correlation")
-            plt.plot([1,2,3,4], [4,3,2,1], marker='o')
-            plt.xlabel("Feature")
-            plt.ylabel("Correlation")
-            plt.tight_layout()
-            plt.savefig(feature_corr_file)
-            plt.close()
+        _log_artifacts_if_exist(default_artifacts)
 
-        anomaly_bursts_file = outdir / "anomaly_bursts.png"
-        if not anomaly_bursts_file.exists():
-            plt.figure(figsize=(5,4))
-            plt.title("Anomaly Bursts")
-            plt.plot([1,2,3,4], [2,4,1,3], marker='x')
-            plt.xlabel("Time")
-            plt.ylabel("Count")
-            plt.tight_layout()
-            plt.savefig(anomaly_bursts_file)
-            plt.close()
+        # 3) Return the run id to the caller
+        try:
+            run_id = run.info.run_id
+        except Exception:
+            run_id = None
 
-        # --- Log artifacts to MLflow ---
-        for artifact in [summary_file, feature_corr_file, anomaly_bursts_file]:
-            if artifact.exists():
-                mlflow.log_artifact(str(artifact))
+    return run_id

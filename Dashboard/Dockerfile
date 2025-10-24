@@ -1,5 +1,6 @@
 FROM python:3.11-slim
 
+# Set working directory to repo root
 WORKDIR /app
 
 # Install basic dependencies for pandas/numpy
@@ -9,15 +10,17 @@ RUN apt-get update && apt-get install -y \
     fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first (for caching)
-COPY requirements.txt .
+# Copy the full repo (one level above Dashboard folder)
+COPY ../ .  
+
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy your Dashboard folder into container
-COPY . .
-
-# Streamlit default port
+# Expose Streamlit default port
 EXPOSE 8501
 
-# Run Streamlit app
+# Environment variable so Streamlit can talk to backend container
+ENV API_URL="http://backend:5000"
+
+# Run Streamlit app from Dashboard folder
 CMD ["streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8501"]

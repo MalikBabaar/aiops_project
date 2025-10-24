@@ -1,17 +1,19 @@
-import argparse, json, os, joblib, numpy as np, pandas as pd
+import argparse, json, os, sys, math, joblib, numpy as np, pandas as pd
 from datetime import datetime
 from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.ensemble import IsolationForest
-from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, accuracy_score
+from sklearn.metrics import precision_score, recall_score, f1_score
 from sklearn.model_selection import train_test_split
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
-from mlflow import sklearn
+from sklearn.feature_extraction.text import TfidfVectorizer
 import mlflow
-import sys
-
+from mlflow import sklearn as ml_sklearn
+from mlflow.tracking import MlflowClient
+from __future__ import annotations
+from typing import Dict, List, Tuple, Optional
+from .mlflow_logger import log_mlflow_metrics
 
 # ---------------- MLflow Setup ----------------
 #mlruns_path = Path("C:/aiops_project/mlruns")
@@ -36,136 +38,12 @@ except Exception as e:
     print(f"[⚠️ MLflow Warning] Could not create/set experiment: {e}")
     mlflow.set_experiment(EXPERIMENT_NAME)
 
-def retrain_model(df_logs: pd.DataFrame = None, input_paths: list = None, contamination: float = 0.05, outdir: str = "./run"):
-    """
-    Full retraining pipeline for IsolationForest, including:
-    - Data cleaning
-    - Feature engineering
-    - Scaling
-    - Model training
-    - Metrics computation
-    - Plot generation
-    - MLflow logging
-    
-    Can take a DataFrame directly or input file paths.
-    Returns a dictionary with metrics, run_id, model & plots paths.
-    """
-
-    RANDOM_STATE = 42
-    NUMERIC_FEATS = ["status_encoded", "query_encoded", "timestamp_burst"]
-    BINARY_FEATS  = ["is_request", "is_response", "has_error", "error_spike",
-                     "duplicate_id", "rare_query", "atypical_combo"]
-    ALL_FEATS = NUMERIC_FEATS + BINARY_FEATS
-
-    outdir = Path(outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    # --- Load from paths if df not provided ---
-    if df_logs is None:
-        frames = load_frames(input_paths or ["../logcurr.csv", "../logcurr.txt"])
-        if not frames:
-            raise FileNotFoundError(f"No input files found. Checked: {input_paths}")
-        df_logs = pd.concat(frames, ignore_index=True)
-
-    # --- 1️⃣ Data Cleaning ---
-    # Ensure essential columns exist
-    for col in ["service", "query", "request_id", "timestamp", "log"]:
-        if col not in df_logs.columns:
-            df_logs[col] = "unknown" if col not in ["timestamp", "log"] else pd.Timestamp.now() if col=="timestamp" else ""
-
-    # Remove exact duplicates
-    df_logs.drop_duplicates(subset=["request_id"], inplace=True, ignore_index=True)
-
-    # Convert timestamp to datetime
-    df_logs["timestamp"] = pd.to_datetime(df_logs["timestamp"], errors="coerce")
-    df_logs["timestamp"] = df_logs["timestamp"].fillna(pd.Timestamp.now())
-
-    # Normalize text
-    df_logs["log"] = df_logs["log"].astype(str).str.lower().str.strip()
-
-    # Ensure binary columns exist and are 0/1
-    for col in BINARY_FEATS:
-        if col not in df_logs.columns:
-            df_logs[col] = 0
-        df_logs[col] = df_logs[col].astype(int)
-
-    # --- 2️⃣ Feature Engineering ---
-    df_logs, freq_table = build_features(df_logs)
-
-    # --- 3️⃣ Scale features ---
-    feats = df_logs[ALL_FEATS].values
-    scaler = StandardScaler()
-    feats_scaled = scaler.fit_transform(feats)
-
-    # --- 4️⃣ Train IsolationForest ---
-    model = IsolationForest(contamination=contamination, random_state=RANDOM_STATE)
-    model.fit(feats_scaled)
-    df_logs["anomaly_score"] = -model.score_samples(feats_scaled)
-    thr = float(np.quantile(df_logs["anomaly_score"], 1 - contamination))
-    df_logs["anomaly_flag"] = (df_logs["anomaly_score"] >= thr).astype(int)
-
-    # --- 5️⃣ Compute metrics ---
-    if "label" in df_logs.columns and df_logs["label"].notna().any():
-        y_true = df_logs["label"].astype(int).values
-        y_pred = df_logs["anomaly_flag"].values
-        precision = precision_score(y_true, y_pred, zero_division=0)
-        recall = recall_score(y_true, y_pred, zero_division=0)
-        f1 = f1_score(y_true, y_pred, zero_division=0)
-    else:
-        n_top = max(1, int(len(df_logs) * contamination))
-        top_idx = np.argsort(-df_logs["anomaly_score"].values)[:n_top]
-        y_pseudo = np.zeros(len(df_logs), dtype=int)
-        y_pseudo[top_idx] = 1
-        y_pred = df_logs["anomaly_flag"].values
-        precision = precision_score(y_pseudo, y_pred, zero_division=0)
-        recall = recall_score(y_pseudo, y_pred, zero_division=0)
-        f1 = f1_score(y_pseudo, y_pred, zero_division=0)
-
-    # --- 6️⃣ Prepare plots ---
-    plots_paths = {}
-    save_feature_correlation(df_logs, outdir); plots_paths["Extended Feature Correlation Heatmap"] = str(outdir / "feature_corr.png")
-    save_anomaly_bursts(df_logs, outdir); plots_paths["Anomaly Bursts Over Time"] = str(outdir / "anomaly_bursts.png")
-    plot_duplicate_ids(df_logs, outdir); plots_paths["Duplicate IDs and Anomalies"] = str(outdir / "duplicate_ids.png")
-    plot_rare_queries(df_logs, outdir); plots_paths["Rare Queries and Anomalies"] = str(outdir / "rare_queries.png")
-    plot_gap_anomalies(df_logs, outdir); plots_paths["Time Gaps Between Logs (Anomalies Only)"] = str(outdir / "gap_anomalies.png")
-    plot_combo_anomalies(df_logs, outdir); plots_paths["Atypical Error + Rare Query Combinations"] = str(outdir / "combo_anomalies.png")
-
-    # --- 7️⃣ Save model & vectorizer ---
-    joblib.dump(model, outdir / "model.joblib")
-    joblib.dump(TfidfVectorizer(max_features=5000).fit(df_logs["log"]), outdir / "vectorizer.joblib")
-
-    # --- 8️⃣ MLflow logging ---
-    mlflow.set_experiment("aiops-anomaly-intelligence")
-    with mlflow.start_run() as run:
-        mlflow.log_param("contamination", contamination)
-        mlflow.log_metric("total_records", len(df_logs))
-        mlflow.log_metric("anomaly_count", int(df_logs["anomaly_flag"].sum()))
-        mlflow.log_metric("anomaly_rate", float(df_logs["anomaly_flag"].mean()))
-        mlflow.log_metric("precision", float(precision))
-        mlflow.log_metric("recall", float(recall))
-        mlflow.log_metric("f1_score", float(f1))
-        mlflow.log_artifact(outdir / "model.joblib")
-        mlflow.log_artifact(outdir / "vectorizer.joblib")
-        for path in plots_paths.values():
-            mlflow.log_artifact(path)
-
-    # --- 9️⃣ Return results ---
-    return {
-        "run_id": run.info.run_id,
-        "precision": precision,
-        "recall": recall,
-        "f1_score": f1,
-        "total_records": len(df_logs),
-        "anomaly_count": int(df_logs["anomaly_flag"].sum()),
-        "anomaly_rate": float(df_logs["anomaly_flag"].mean()),
-        "duplicate_anomalies": int(df_logs["duplicate_id"].sum()),
-        "rare_query_anomalies": int(df_logs["rare_query"].sum()),
-        "atypical_combo_anomalies": int(df_logs["atypical_combo"].sum()),
-        "plots_paths": plots_paths,
-        "model_file": str(outdir / "model.joblib"),
-        "vectorizer_file": str(outdir / "vectorizer.joblib")
-    }
-
+ml_sklearn.autolog(
+    log_input_examples=True,
+    log_model_signatures=True,
+    log_models=True,
+    silent=True,
+)
 
 RANDOM_STATE = 42
 NUMERIC_FEATS = ["status_encoded", "query_encoded", "timestamp_burst"]
@@ -541,6 +419,285 @@ def main():
 
     print("✅ Analytics complete. Metrics and artifacts logged to", outdir.resolve())
 
+# ---------- BEGIN: Robust retrain pipeline additions ----------
+
+from __future__ import annotations
+from pathlib import Path
+import json
+import joblib
+import numpy as np
+import pandas as pd
+import mlflow
+
+from typing import Dict, List, Tuple, Optional
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import precision_score, recall_score, f1_score
+
+# 1) UNIVERSAL SCHEMA NORMALIZER
+#    Map many possible dataset column names to the columns your pipeline expects.
+_COLUMN_SYNONYMS: Dict[str, List[str]] = {
+    "timestamp":   ["timestamp", "time", "ts", "datetime", "date_time", "event_time", "log_time"],
+    "service":     ["service", "svc", "service_name", "app", "application", "component"],
+    "query":       ["query", "endpoint", "uri", "path", "route", "operation"],
+    "status_code": ["status_code", "status", "http_status", "code", "resp_code"],
+    "request_id":  ["request_id", "req_id", "trace_id", "correlation_id", "rid"],
+    "is_request":  ["is_request", "request", "req_flag"],
+    "is_response": ["is_response", "response", "resp_flag"],
+    "has_error":   ["has_error", "error", "is_error", "err"],
+    "error_spike": ["error_spike", "spike", "error_spike_flag"],
+    # optional label col – your default `--label-col` is "anomaly_tag"
+    "anomaly_tag": ["anomaly_tag", "label", "ground_truth", "target", "y", "anomaly_label"],
+}
+
+def normalize_dataset_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Returns a copy of df with columns normalized to the names expected by your pipeline.
+    Also coerces basic types for flags and parses timestamps to UTC.
+    """
+    df = df.copy()
+    # Build lowercase map for case-insensitive matching
+    lowermap = {c.lower(): c for c in df.columns}
+
+    # Decide renaming
+    rename_map = {}
+    for expected, candidates in _COLUMN_SYNONYMS.items():
+        for cand in candidates:
+            if cand.lower() in lowermap:
+                rename_map[lowermap[cand.lower()]] = expected
+                break
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    # Parse timestamp if present
+    if "timestamp" in df.columns:
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+
+    # Coerce binary flags to int {0,1}
+    for b in ("is_request", "is_response", "has_error", "error_spike"):
+        if b in df.columns:
+            df[b] = (
+                df[b]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .isin(["1", "true", "t", "yes", "y"])
+            ).astype(int)
+
+    # Ensure minimally required columns exist (fill safe defaults if missing)
+    if "service" not in df.columns:
+        df["service"] = "unknown"
+    # If query missing, leave absent (your build_features handles default via frequency 0.0)
+    # If status_code missing, build_features will default status_encoded=3 ("unknown")
+    # request_id missing is fine (duplicate logic becomes no-op)
+
+    return df
+
+
+# 2) VALIDATOR
+def validate_dataset(df: pd.DataFrame, required: Optional[List[str]] = None) -> Tuple[bool, str]:
+    """
+    Validate minimal requirements for the training pipeline.
+    Returns (ok, message). If not ok, message explains what's missing.
+    """
+    required = required or ["timestamp", "service"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        return False, f"Missing required column(s): {', '.join(missing)}"
+
+    # Check timestamp parsability (after normalization we coerced already)
+    if df["timestamp"].isna().all():
+        return False, "All timestamps are invalid or empty after parsing."
+
+    return True, "ok"
+
+
+# 3) RETRAIN WRAPPER
+def retrain_model(
+    df: pd.DataFrame,
+    outdir: str | Path = "./run_streamlit",
+    label_col: str = "anomaly_tag",
+    mlflow_experiment: str = "aiops-anomaly-intelligence",
+) -> Tuple[int, dict, dict]:
+    """
+    Retrain the IsolationForest using the given dataframe.
+    Returns: (exit_code, metrics, artifacts)
+      exit_code:
+        0 = success
+        1 = input/validation error
+        2 = training/scoring error
+        3 = MLflow logging failure (training succeeded)
+    """
+    outdir = Path(outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    # --- Normalize & validate dataset so we can handle many datasets robustly ---
+    df_norm = normalize_dataset_columns(df)
+    ok, msg = validate_dataset(df_norm)
+    artifacts = {
+        "feature_corr":   outdir / "feature_corr.png",
+        "anomaly_bursts": outdir / "anomaly_bursts.png",
+        "duplicate_ids":  outdir / "duplicate_ids.png",
+        "rare_queries":   outdir / "rare_queries.png",
+        "gap_anomalies":  outdir / "gap_anomalies.png",
+        "combo_anomalies":outdir / "combo_anomalies.png",
+        "sample_anomalies": outdir / "sample_anomalies.csv",
+        "run_summary":    outdir / "run_summary.json",
+        "scored":         outdir / "scored.csv",
+        "model":          outdir / "model.joblib",
+        "scaler":         outdir / "scaler.joblib",
+        "freq_table":     outdir / "freq_table.parquet",
+    }
+    if not ok:
+        return 1, {"error": msg}, artifacts
+
+    try:
+        # --- Build features using your existing function ---
+        df_feats, freq_table = build_features(df_norm)
+
+        # Persist freq_table for consistent serving later
+        try:
+            freq_table.to_parquet(artifacts["freq_table"])
+        except Exception:
+            pass
+        # --- Optional labels ---
+        y = None
+        if label_col in df_feats.columns:
+            y = (df_feats[label_col].astype(str).str.lower() == "anomaly").astype(int).values
+
+        # --- Matrix + scaling ---
+        X = df_feats[ALL_FEATS].values
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        try:
+            joblib.dump(scaler, artifacts["scaler"])
+        except Exception:
+            pass
+        # --- Split (keeps parity with your main pipeline) ---
+        if y is None:
+            Xtr, Xte = train_test_split(X_scaled, test_size=0.2, random_state=RANDOM_STATE)
+            ytr = yte = None
+        else:
+            Xtr, Xte, ytr, yte = train_test_split(
+                X_scaled, y, test_size=0.2, random_state=RANDOM_STATE, stratify=y
+            )
+
+        # --- Train & threshold (your existing funcs) ---
+        model, raw_tr = train_isoforest(Xtr)
+        thr, _ = choose_threshold(raw_tr, ytr)
+
+        # Score entire dataset
+        df_feats["anomaly_score"] = -model.score_samples(X_scaled)
+        if thr is None:
+            thr = float(np.quantile(df_feats["anomaly_score"].values, 0.98))
+        df_feats["anomaly_flag"] = (df_feats["anomaly_score"] >= float(thr)).astype(int)
+
+        # --- Metrics ---
+        metrics = {
+            "threshold": float(thr),
+            "total_records": int(len(df_feats)),
+            "anomaly_count": int(df_feats["anomaly_flag"].sum()),
+            "anomaly_rate": float(df_feats["anomaly_flag"].mean()),
+            # Note: these three are sums of their flags, not "among anomalies".
+            "duplicate_anomalies": int(df_feats["duplicate_id"].sum() if "duplicate_id" in df_feats else 0),
+            "rare_query_anomalies": int(df_feats["rare_query"].sum() if "rare_query" in df_feats else 0),
+            "atypical_combo_anomalies": int(df_feats["atypical_combo"].sum() if "atypical_combo" in df_feats else 0),
+            "metrics_source": None,
+            "precision": None,
+            "recall": None,
+            "f1": None,
+        }
+
+        # With labels → evaluate; else pseudo-labels
+        try:
+            if y is not None:
+                # Evaluate on test split first
+                try:
+                    raw_te = -model.score_samples(Xte)
+                    y_pred_te = (raw_te >= float(thr)).astype(int)
+                    if yte is not None:
+                        metrics["precision"] = float(precision_score(yte, y_pred_te, zero_division=0))
+                        metrics["recall"]    = float(recall_score(yte, y_pred_te, zero_division=0))
+                        metrics["f1"]        = float(f1_score(yte, y_pred_te, zero_division=0))
+                        metrics["metrics_source"] = "true_labels_test"
+                except Exception:
+                    pass
+
+                # Fallback: compute on all rows
+                if metrics["metrics_source"] is None:
+                    y_all = y
+                    y_pred_all = df_feats["anomaly_flag"].values
+                    metrics["precision"] = float(precision_score(y_all, y_pred_all, zero_division=0))
+                    metrics["recall"]    = float(recall_score(y_all, y_pred_all, zero_division=0))
+                    metrics["f1"]        = float(f1_score(y_all, y_pred_all, zero_division=0))
+                    metrics["metrics_source"] = "true_labels_all"
+            else:
+                contamination = 0.01
+                n_pseudo = max(1, int(len(df_feats) * contamination))
+                top_idx = np.argsort(-df_feats["anomaly_score"].values)[:n_pseudo]
+                y_pseudo = np.zeros(len(df_feats), dtype=int)
+                y_pseudo[top_idx] = 1
+                y_pred = df_feats["anomaly_flag"].values
+                metrics["precision"] = float(precision_score(y_pseudo, y_pred, zero_division=0))
+                metrics["recall"]    = float(recall_score(y_pseudo, y_pred, zero_division=0))
+                metrics["f1"]        = float(f1_score(y_pseudo, y_pred, zero_division=0))
+                metrics["metrics_source"] = "pseudo_top_percent"
+        except Exception:
+            metrics["metrics_source"] = metrics.get("metrics_source") or "metrics_failed"
+
+        # --- Plots & artifacts (your existing plotting functions) ---
+        try:
+            save_feature_correlation(df_feats, outdir)
+            save_anomaly_bursts(df_feats, outdir)
+            plot_duplicate_ids(df_feats, outdir)
+            plot_rare_queries(df_feats, outdir)
+            plot_gap_anomalies(df_feats, outdir)
+            plot_combo_anomalies(df_feats, outdir)
+            log_sample_anomalies(df_feats, outdir)
+        except Exception:
+            pass
+
+        # Save model & scored data
+        try:
+            joblib.dump(model, artifacts["model"])
+        except Exception:
+            pass
+        try:
+            df_feats.to_csv(artifacts["scored"], index=False)
+        except Exception:
+            pass
+        try:
+            with open(artifacts["run_summary"], "w") as f:
+                json.dump(metrics, f, indent=2)
+        except Exception:
+            pass
+        # --- MLflow logging (reuse your helper) ---
+        mlflow.set_experiment(mlflow_experiment)
+        try:
+            log_mlflow_metrics(metrics, outdir)
+            # Attach run_id for callers
+            try:
+                run = getattr(mlflow, "last_active_run", lambda: None)() or mlflow.active_run()
+                if run is not None:
+                    metrics["run_id"] = run.info.run_id
+            except Exception:
+                pass
+        except Exception:
+            # If logging failed, still try to attach run_id (if any)
+            try:
+                run = getattr(mlflow, "last_active_run", lambda: None)() or mlflow.active_run()
+                if run is not None:
+                    metrics["run_id"] = run.info.run_id
+            except Exception:
+                pass
+            return 3, metrics, {k: str(v) for k, v in artifacts.items()}
+
+        # Success
+        return 0, metrics, {k: str(v) for k, v in artifacts.items()}
+
+    except Exception as e:
+        # Unexpected failure path
+        return 2, {"error": f"training_failed: {e}"}, {k: str(v) for k, v in artifacts.items()}
 
 if __name__ == "__main__":
     main()
