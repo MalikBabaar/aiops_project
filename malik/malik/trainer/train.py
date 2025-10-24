@@ -25,14 +25,17 @@ from typing import Dict, List, Tuple, Optional
 
 from malik.malik.trainer.mlflow_logger import log_mlflow_metrics
 
-# ----------------------- MLflow Setup -----------------------
-# Tracking URI from env or default
-MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5001")
-try:
-    mlflow.set_tracking_uri(MLFLOW_URI)
-except Exception:
-    # Don't crash if URI not reachable at import time
-    pass
+# ---------------------- MLflow Tracking URI (robust) ----------------------
+import os, mlflow
+
+# Prefer the environment variable; otherwise default to a local, shared file store
+# (Use this if you mount a volume at /mlruns in Docker for both trainer and streamlit)
+TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "file:/mlruns")
+mlflow.set_tracking_uri(TRACKING_URI)
+
+# Optional: print it so you can verify at runtime/logs
+print("Trainer Tracking URI:", mlflow.get_tracking_uri())
+# -------------------------------------------------------------------------
 
 EXPERIMENT_NAME = os.getenv("MLFLOW_EXPERIMENT", "aiops-anomaly-intelligence")
 

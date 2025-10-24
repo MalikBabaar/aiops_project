@@ -13,12 +13,10 @@ def _is_number(x: Any) -> bool:
     if isinstance(x, numbers.Number):
         return True
     try:
-            float(x)  # attempt float cast for numpy scalars/strings like "1.0"
-            return True
+        float(x)  # attempt float cast for numpy scalars/strings like "1.0"
+        return True
     except Exception:
         return False
-
-
 def _safe_log_metrics(d: Dict[str, Any]) -> None:
     """Log only numeric metrics to MLflow; ignore keys with None / non-numeric values."""
     numeric = {}
@@ -29,7 +27,8 @@ def _safe_log_metrics(d: Dict[str, Any]) -> None:
             try:
                 numeric[k] = float(v)
             except Exception:
-                pass  # skip non-castable silently
+                # skip non-castable silently
+                pass
     if numeric:
         mlflow.log_metrics(numeric)
 
@@ -68,8 +67,7 @@ def log_mlflow_metrics(
     extra_artifacts: Optional[Iterable[Path]] = None,
 ) -> Optional[str]:
     """
-    Log training and analytics outputs to MLflow and persist run_summary.json.
-
+    Log training and analytics outputs to MLflow (plots only) and persist run_summary.json locally.
     Returns the MLflow run_id (or None on best-effort failure).
     """
     outdir = Path(outdir)
@@ -81,7 +79,8 @@ def log_mlflow_metrics(
         with open(summary_path, "w") as f:
             json.dump(metrics, f, indent=2)
     except Exception:
-        pass  # do not interrupt MLflow logging if local write fails
+        # do not interrupt MLflow logging if local write fails
+        pass
 
     # Start the MLflow run and log
     mlflow.set_experiment(experiment_name)
@@ -100,33 +99,50 @@ def log_mlflow_metrics(
         # ---- Metrics: numeric-only
         _safe_log_metrics(metrics)
 
-        # ---- Artifacts
-        # Group plots + sample CSV under "static-artifacts" for a clean UI
-        static_names = [
-            "feature_corr.png",
-            "anomaly_bursts.png",
-            "duplicate_ids.png",
-            "rare_queries.png",
-            "gap_anomalies.png",
-            "combo_anomalies.png",
-            "sample_anomalies.csv",
-        ]
-        for name in static_names:
-            _log_artifact_if_exists(outdir / name, artifact_path="static-artifacts")
+        # ---- Artifacts (PLOTS ONLY, aligned with Streamlit Tab 7) ----
+        # Optional: metrics.json in MLflow for quick inspection (remove if you want only images)
+        try:
+            mlflow.log_text(json.dumps(metrics, indent=2), artifact_file="analytics/metrics.json")
+        except Exception:
+            pass
 
-        # Root-level artifacts (or choose a different folder if you prefer)
-        root_names = ["scored.csv", "model.joblib", "scaler.joblib", "freq_table.parquet"]
-        for name in root_names:
-            _log_artifact_if_exists(outdir / name)
+        # Map your local filenames -> canonical artifact names under analytics/plots
+        # Local files are created by train.py in `outdir`
+        plot_map = {
+            "feature_correlation.png": outdir / "feature_corr.png",
+            "anomaly_bursts.png":      outdir / "anomaly_bursts.png",
+            "gap_anomalies.png":       outdir / "gap_anomalies.png",
+            "atypical_combo.png":      outdir / "combo_anomalies.png",
+            "duplicate_ids.png":       outdir / "duplicate_ids.png",
+            "rare_queries.png":        outdir / "rare_queries.png",
+        }
 
-        # Always log the summary JSON
-        _log_artifact_if_exists(summary_path)
+        # IMPORTANT: mlflow.log_artifact() cannot rename the file.
+        # To upload with the canonical names, copy to a temp file with the desired name, then log.
+        import tempfile, shutil
+        with tempfile.TemporaryDirectory() as _tmpd:
+            _tmpd = Path(_tmpd)
+            for remote_name, local_path in plot_map.items():
+                if local_path.is_file():
+                    tmp_file = _tmpd / remote_name
+                    try:
+                        shutil.copy2(local_path, tmp_file)
+                        mlflow.log_artifact(str(tmp_file), artifact_path="analytics/plots")
+                    except Exception:
+                        # never fail the run due to artifact upload
+                        pass
 
-        # Any extras supplied by the caller
+        # (No CSV tables are uploaded)
+
+        # Any additional artifacts explicitly provided by caller (ignored unless they are plots)
         if extra_artifacts:
             for p in extra_artifacts:
-                _log_artifact_if_exists(Path(p))
+                p = Path(p)
+                if p.suffix.lower() in {".png", ".jpg", ".jpeg"} and p.is_file():
+                    _log_artifact_if_exists(p, artifact_path="analytics/plots")
 
+        # Always log the local summary JSON (optional in MLflow)
+        _log_artifact_if_exists(summary_path, artifact_path="artifacts")
         # Return run id to caller
         try:
             run_id = run.info.run_id

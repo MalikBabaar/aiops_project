@@ -4,8 +4,11 @@ from typing import List, Optional
 from pathlib import Path
 import pandas as pd
 import io
+import sys
 
-from .train import retrain_model  # import the wrapper
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
+from malik.malik.trainer.train import retrain_model
 
 app = FastAPI(title="Trainer API")
 

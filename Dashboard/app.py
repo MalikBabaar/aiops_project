@@ -13,12 +13,19 @@ import json
 import mlflow
 import sys
 import os
+from typing import Optional, List
+
+
+
+# Read from environment; provide a sensible default for file-based tracking
+TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "file:/mlruns")
+mlflow.set_tracking_uri(TRACKING_URI)
 
 # Add trainer folder to Python path
 #sys.path.append(str(Path(__file__).resolve().parent.parent / "malik" / "malik" / "trainer"))
 
-API_URL = "http://localhost:5000"  # FastAPI backend URL
-TRAINER_API_URL = "http://localhost:8000"
+API_URL = "http://backend:5000"  # FastAPI backend URL
+TRAINER_API_URL = "http://trainer_api:9000"
 
 def retrain_via_api_py(uploaded_file,
                        outdir="/data/models/run_upload",
@@ -436,63 +443,68 @@ else:
         else:
             st.error("⚠️ Failed to load users from backend.")
 
-                # --- ML-FLOW METRICS TAB --- #
+    # --- ML-FLOW METRICS TAB (plots only) ---
     with tabs[7] if len(tabs) > 7 else st.expander("ML-Flow Metrics"):
-        st.title(" ML-Flow Training Metrics")
+        st.title("ML-Flow Training Metrics (Plots Only)")
 
+        # Default run id from last retrain, if available
+        last_run_id = None
         if "retrain_result" in st.session_state and st.session_state["retrain_result"]:
-            result = st.session_state["retrain_result"]
-            metrics = result.get("metrics", {})
-            artifacts = result.get("artifacts", {})
+            _m = st.session_state["retrain_result"].get("metrics", {})
+            last_run_id = _m.get("run_id")
 
-            # Show MLflow run id if present
-            run_id = metrics.get("run_id")
-            if run_id:
-                st.markdown(f"**MLflow Run ID:** `{run_id}`")
+        run_id = st.text_input(
+            "MLflow Run ID",
+            value=last_run_id or "",
+            help="Paste any MLflow run ID to view its plots"
+        )
+        if not run_id:
+            st.info("Run a retrain first or paste a valid MLflow run ID.")
+            st.stop()
 
-            st.subheader("⚡ Anomaly Metrics")
-            st.write({
-                "Total Records": metrics.get("total_records"),
-                "Anomaly Count": metrics.get("anomaly_count"),
-                "Anomaly Rate": metrics.get("anomaly_rate"),
-                "Duplicate Anomalies": metrics.get("duplicate_anomalies"),
-                "Rare Query Anomalies": metrics.get("rare_query_anomalies"),
-                "Atypical Combo Anomalies": metrics.get("atypical_combo_anomalies"),
-                "Threshold": metrics.get("threshold"),
-            })
+        st.markdown(f"**MLflow Run ID:** `{run_id}`")
 
-            # Helper to build URL from absolute path returned by the API
-            def art_url(p: str) -> str:
-                name = Path(p).name
-                return f"{TRAINER_API_URL.rstrip('/')}/static-artifacts/{name}"
+        client = MlflowClient()  # uses MLFLOW_TRACKING_URI
+        download_root = Path("/tmp/mlflow_dash")
+        download_root.mkdir(parents=True, exist_ok=True)
 
-            # Local artifacts folder path
-            ARTIFACTS_DIR = Path(__file__).resolve().parents[1] / "malik" / "malik" / "trainer" / "run_streamlit"
+        def try_download(run_id: str, rel_path: str) -> Optional[Path]:
+            try:
+                local = client.download_artifacts(run_id, rel_path, dst_path=str(download_root))
+                p = Path(local)
+                return p if p.exists() else None
+            except Exception:
+                return None
 
-            st.markdown("###  Analytics Plots")
+        def first_existing(run_id: str, candidates: list[str]) -> Optional[Path]:
+            for rel in candidates:
+                p = try_download(run_id, rel)
+                if p and p.exists():
+                    return p
+            return None
 
-            # List of all plots you want to display
-            plots = [
-                ("Feature Correlation", "feature_corr.png"),
-                ("Anomaly Bursts", "anomaly_bursts.png"),
-                ("Duplicate IDs", "duplicate_ids.png"),
-                ("Rare Queries", "rare_queries.png"),
-                ("Gap Anomalies", "gap_anomalies.png"),
-                ("Atypical Combo", "combo_anomalies.png"),
-            ]
+        st.subheader("Analytics Plots")
 
-            # Create 3 columns per row
-            for row in range(0, len(plots), 3):
-                cols = st.columns(3, gap="large")
-                for col, (title, filename) in zip(cols, plots[row:row + 3]):
-                    img_path = ARTIFACTS_DIR / filename
-                    if img_path.exists():
-                        with col:
-                            st.image(str(img_path), caption=title, use_container_width=True)
-                    else:
-                        with col:
-                            st.markdown(f"❌ *{title} not found*")
+        plot_candidates = {
+            "Feature Correlation": ["analytics/plots/feature_correlation.png", "static-artifacts/feature_corr.png"],
+            "Anomaly Bursts":      ["analytics/plots/anomaly_bursts.png",     "static-artifacts/anomaly_bursts.png"],
+            "Duplicate IDs":       ["analytics/plots/duplicate_ids.png",      "static-artifacts/duplicate_ids.png"],
+            "Rare Queries":        ["analytics/plots/rare_queries.png",       "static-artifacts/rare_queries.png"],
+            "Gap Anomalies":       ["analytics/plots/gap_anomalies.png",      "static-artifacts/gap_anomalies.png"],
+            "Atypical Combo":      ["analytics/plots/atypical_combo.png",     "static-artifacts/combo_anomalies.png"],
+        }
 
-            # Optional message if no plots found
-            if not any((ARTIFACTS_DIR / f).exists() for _, f in plots):
-                st.warning("No plots found. Retrain your model to generate new analytics visuals.")
+        cols = st.columns(3, gap="large")
+        found_any = False
+        for i, (title, candidates) in enumerate(plot_candidates.items()):
+            img = first_existing(run_id, candidates)
+            with cols[i % 3]:
+                st.markdown(f"**{title}**")
+                if img and img.is_file():
+                    st.image(str(img), use_container_width=True)
+                    found_any = True
+                else:
+                    st.markdown(f"❌ *{title} not found*")
+
+        if not found_any:
+            st.warning("No plots found. Retrain the model or verify artifact paths/names in MLflow.")

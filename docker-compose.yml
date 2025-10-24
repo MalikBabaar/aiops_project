@@ -35,10 +35,11 @@ services:
     container_name: mlflow_server
     command: >
       mlflow server
-      --backend-store-uri sqlite:///mlflow.db
-      --default-artifact-root /mlflow/artifacts
       --host 0.0.0.0
       --port 5001
+      --backend-store-uri sqlite:///mlflow.db
+      --artifacts-destination file:/mlflow/artifacts
+      --serve-artifacts
     volumes:
       - ./mlflow_data:/mlflow
     ports:
@@ -141,13 +142,15 @@ services:
       context: ./malik/malik/trainer
       dockerfile: Dockerfile
     container_name: trainer_api
-    command: uvicorn api:app --host 0.0.0.0 --port 9000
+    command: uvicorn malik.malik.trainer.api:app --host 0.0.0.0 --port 9000
     ports:
       - "9000:9000"
     depends_on:
       - mlflow
     environment:
       - MLFLOW_TRACKING_URI=http://mlflow:5001
+    volumes:
+      - ./malik:/app/malik
     networks:
       - aiops_net
     restart: always
