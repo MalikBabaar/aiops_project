@@ -1,9 +1,11 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Any, Iterable, Optional
+import os
 import json
 import numbers
 import mlflow
+from mlflow.tracking import MlflowClient
 
 
 def _is_number(x: Any) -> bool:
@@ -11,17 +13,14 @@ def _is_number(x: Any) -> bool:
     if isinstance(x, numbers.Number):
         return True
     try:
-        # attempt float cast for numpy scalars
-        float(x)
-        return True
+            float(x)  # attempt float cast for numpy scalars/strings like "1.0"
+            return True
     except Exception:
         return False
 
 
 def _safe_log_metrics(d: Dict[str, Any]) -> None:
-    """
-    Log only numeric metrics to MLflow; ignore keys with None / non-numeric values.
-    """
+    """Log only numeric metrics to MLflow; ignore keys with None / non-numeric values."""
     numeric = {}
     for k, v in d.items():
         if v is None:
@@ -30,21 +29,36 @@ def _safe_log_metrics(d: Dict[str, Any]) -> None:
             try:
                 numeric[k] = float(v)
             except Exception:
-                # skip non-castable values silently
-                pass
+                pass  # skip non-castable silently
     if numeric:
         mlflow.log_metrics(numeric)
 
 
-def _log_artifacts_if_exist(paths: Iterable[Path]) -> None:
-    """Best-effort logging of artifacts; skip any that are missing."""
-    for p in paths:
-        try:
-            if p and Path(p).exists():
-                mlflow.log_artifact(str(p))
-        except Exception:
-            # never fail the run because of artifact upload
-            pass
+def _log_artifact_if_exists(path: Path, artifact_path: Optional[str] = None) -> None:
+    """Best-effort logging of a single artifact; skip any that are missing."""
+    try:
+        if path and Path(path).is_file():
+            mlflow.log_artifact(str(path), artifact_path=artifact_path)
+    except Exception:
+        # never fail the run because of artifact upload
+        pass
+
+
+def build_mlflow_run_url(run_id: str) -> Optional[str]:
+    """
+    Construct a clickable MLflow UI URL for a run if MLFLOW_TRACKING_URI is http(s).
+    Example: http://localhost:5001/#/experiments/<exp_id>/runs/<run_id>
+    """
+    try:
+        tracking = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5001")
+        if tracking.startswith(("http://", "https://")):
+            client = MlflowClient()
+            run = client.get_run(run_id)
+            exp_id = run.info.experiment_id
+            return f"{tracking}/#/experiments/{exp_id}/runs/{run_id}"
+    except Exception:
+        pass
+    return None
 
 
 def log_mlflow_metrics(
@@ -56,66 +70,64 @@ def log_mlflow_metrics(
     """
     Log training and analytics outputs to MLflow and persist run_summary.json.
 
-    Parameters
-    ----------
-    metrics : dict
-        Should include keys like: threshold, anomaly_count, anomaly_rate,
-        precision, recall, f1, duplicate_anomalies, rare_query_anomalies,
-        atypical_combo_anomalies, total_records, etc.
-    outdir : Path
-        Directory where the pipeline saved plots and files.
-    experiment_name : str
-        MLflow experiment name (defaults to 'aiops-anomaly-intelligence').
-    extra_artifacts : iterable of Path, optional
-        Any additional files to attach (if they exist).
-
-    Returns
-    -------
-    run_id : Optional[str]
-        The MLflow run id if available (None if something prevented retrieval).
+    Returns the MLflow run_id (or None on best-effort failure).
     """
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    # Persist/refresh run_summary.json on disk (helpful for offline debugging)
+    # Persist/update run_summary.json locally (handy for debugging)
     summary_path = outdir / "run_summary.json"
     try:
         with open(summary_path, "w") as f:
             json.dump(metrics, f, indent=2)
     except Exception:
-        # Do not interrupt MLflow logging if local write fails
-        pass
+        pass  # do not interrupt MLflow logging if local write fails
 
     # Start the MLflow run and log
     mlflow.set_experiment(experiment_name)
     run_id: Optional[str] = None
+
     with mlflow.start_run() as run:
-        # 1) General / numeric metrics
+        # ---- Params: keep a few as params for easier scanning in UI
+        params = {}
+        if "threshold" in metrics and _is_number(metrics["threshold"]):
+            params["threshold"] = float(metrics["threshold"])
+        if "metrics_source" in metrics and metrics["metrics_source"] is not None:
+            params["metrics_source"] = str(metrics["metrics_source"])
+        if params:
+            mlflow.log_params(params)
+
+        # ---- Metrics: numeric-only
         _safe_log_metrics(metrics)
 
-        # 2) Attach all known artifacts from the pipeline (if present)
-        default_artifacts = [
-            outdir / "feature_corr.png",
-            outdir / "anomaly_bursts.png",
-            outdir / "duplicate_ids.png",
-            outdir / "rare_queries.png",
-            outdir / "gap_anomalies.png",
-            outdir / "combo_anomalies.png",
-            outdir / "sample_anomalies.csv",
-            outdir / "scored.csv",
-            outdir / "model.joblib",
-            outdir / "scaler.joblib",
-            outdir / "freq_table.parquet",
-            summary_path,
+        # ---- Artifacts
+        # Group plots + sample CSV under "static-artifacts" for a clean UI
+        static_names = [
+            "feature_corr.png",
+            "anomaly_bursts.png",
+            "duplicate_ids.png",
+            "rare_queries.png",
+            "gap_anomalies.png",
+            "combo_anomalies.png",
+            "sample_anomalies.csv",
         ]
+        for name in static_names:
+            _log_artifact_if_exists(outdir / name, artifact_path="static-artifacts")
 
-        # Include any extra artifacts if the caller passes them
+        # Root-level artifacts (or choose a different folder if you prefer)
+        root_names = ["scored.csv", "model.joblib", "scaler.joblib", "freq_table.parquet"]
+        for name in root_names:
+            _log_artifact_if_exists(outdir / name)
+
+        # Always log the summary JSON
+        _log_artifact_if_exists(summary_path)
+
+        # Any extras supplied by the caller
         if extra_artifacts:
-            default_artifacts.extend(list(extra_artifacts))
+            for p in extra_artifacts:
+                _log_artifact_if_exists(Path(p))
 
-        _log_artifacts_if_exist(default_artifacts)
-
-        # 3) Return the run id to the caller
+        # Return run id to caller
         try:
             run_id = run.info.run_id
         except Exception:

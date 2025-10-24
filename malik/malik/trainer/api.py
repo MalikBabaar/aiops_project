@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import io
 
-from malik.malik.trainer.train import retrain_model  # import the wrapper
+from .train import retrain_model  # import the wrapper
 
 app = FastAPI(title="Trainer API")
 

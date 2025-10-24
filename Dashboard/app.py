@@ -17,23 +17,46 @@ import os
 # Add trainer folder to Python path
 #sys.path.append(str(Path(__file__).resolve().parent.parent / "malik" / "malik" / "trainer"))
 
-API_URL = "http://backend:5000"  # FastAPI backend URL
+API_URL = "http://localhost:5000"  # FastAPI backend URL
+TRAINER_API_URL = "http://localhost:8000"
 
-
-def retrain_model(dataset_path):
-    """Call FastAPI retrain endpoint instead of local import"""
-    logs_data = df_logs.to_dict(orient="records")
-    try:
-        #response = requests.post(f"{API_URL}/retrain", json={"dataset_path": dataset_path})
-        response = requests.post(f"{API_URL}/retrain", json=logs_data, timeout=300)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.error(f"Retraining failed: {response.text}")
-            return None
-    except Exception as e:
-        st.error(f"Error connecting to backend: {e}")
+def retrain_via_api_py(uploaded_file,
+                       outdir="/data/models/run_upload",
+                       label_col="anomaly_tag",
+                       mlflow_experiment="aiops-anomaly-intelligence"):
+    """
+    Sends the uploaded file to api.py /retrain (multipart/form-data).
+    Returns {ok, exit_code, metrics, artifacts} on success; None otherwise.
+    """
+    if uploaded_file is None:
+        st.error("Please upload a dataset first.")
         return None
+
+    # Read the file bytes once for upload
+    file_bytes = uploaded_file.getvalue()
+    files = {"file": (uploaded_file.name, file_bytes, "text/csv")}
+    data = {
+        "outdir": outdir,
+        "label_col": label_col,
+        "mlflow_experiment": mlflow_experiment,
+    }
+
+    try:
+        with st.spinner("Uploading dataset and retraining model…"):
+            resp = requests.post(f"{TRAINER_API_URL.rstrip('/')}/retrain",
+                                 files=files, data=data, timeout=600)
+        if resp.ok:
+            return resp.json()
+        else:
+            st.error(f"Retraining failed [{resp.status_code}]: {resp.text[:500]}")
+            return None
+    except requests.exceptions.Timeout:
+        st.error("The retrain request timed out. Try a smaller file or increase timeout.")
+    except requests.exceptions.ConnectionError as e:
+        st.error(f"Cannot connect to Trainer API: {e}")
+    except Exception as e:
+        st.error(f"Unexpected error: {e}")
+    return None
 
 # ---------------- CONFIG ---------------- #
 st.set_page_config(page_title="AIOps Dashboard", layout="wide")
@@ -204,42 +227,49 @@ else:
             )
             st.plotly_chart(fig_net, config={"responsive": True}, key="network_chart")
 
-    
-        # --- ML MODEL MONITORING TAB --- #
+    # --- ML Model Monitoring --- #
     with tabs[2]:
         st.title("ML Model Monitoring")
-
         uploaded_file = st.file_uploader("Upload CSV/TXT logs file", type=["csv", "txt"])
+
+        # Show preview (optional)
         if uploaded_file is not None:
             try:
-                df_logs = pd.read_csv(uploaded_file, engine="python", on_bad_lines="skip")
-            except Exception:
-                df_logs = pd.read_csv(uploaded_file, names=["log"], engine="python", on_bad_lines="skip")
-
-            # Ensure 'log' column exists
-            if "log" not in df_logs.columns:
-                if len(df_logs.columns) == 1:
-                    df_logs = df_logs.rename(columns={df_logs.columns[0]: "log"})
+                if uploaded_file.name.endswith(".csv"):
+                    _df_preview = pd.read_csv(uploaded_file, engine="python", on_bad_lines="skip")
                 else:
-                    df_logs["log"] = df_logs.astype(str).agg(" | ".join, axis=1)
+                    # TXT lines → DataFrame
+                    lines = uploaded_file.getvalue().decode("utf-8", errors="ignore").splitlines()
+                    _df_preview = pd.DataFrame({"log": lines})
+                st.dataframe(_df_preview.head(5))
+            except Exception:
+                st.info("Preview not available; we’ll still upload the file for training.")
 
-            st.dataframe(df_logs.head(5))
+        if st.button("🔄 Retrain Model", type="primary"):
+            result = retrain_via_api_py(uploaded_file)
+            if result:
+                st.session_state["retrain_result"] = result
+                code = result.get("exit_code", -1)
+                if code == 0:
+                    st.success("✅ Model retrained successfully.")
+                elif code == 3:
+                    st.warning("⚠️ Retrained, but MLflow logging had an issue.")
+                else:
+                    st.error(f"Retrain returned exit_code={code}")
 
-            # Retrain Button
-            if st.button("🔄 Retrain Model"):
-                st.info("Retraining model...")
-                retrain_result = retrain_model(df_logs)
-                st.session_state['retrain_result'] = retrain_result
-                st.success("✅ Model retrained successfully!")
-
-                # --- Show model metrics here only ---
-                st.subheader("📊 Model Metrics")
-                st.json({
-                    #"Accuracy": retrain_result.get("accuracy"),
-                    "Precision": retrain_result.get("precision"),
-                    "Recall": retrain_result.get("recall"),
-                    "F1 Score": retrain_result.get("f1_score")
-                })
+        st.subheader(" Model Metrics")
+        if "retrain_result" in st.session_state and st.session_state["retrain_result"]:
+            metrics = st.session_state["retrain_result"].get("metrics", {})
+            st.json({
+                "Precision": metrics.get("precision"),
+                "Recall": metrics.get("recall"),
+                "F1 Score": metrics.get("f1"),
+                "Threshold": metrics.get("threshold"),
+                "Anomaly Rate": metrics.get("anomaly_rate"),
+                "Total Records": metrics.get("total_records"),
+            })
+        else:
+            st.info("Upload a dataset and click Retrain to see metrics.")
 
 
     # --- ANOMALIES TAB --- #
@@ -408,40 +438,61 @@ else:
 
                 # --- ML-FLOW METRICS TAB --- #
     with tabs[7] if len(tabs) > 7 else st.expander("ML-Flow Metrics"):
-        st.title("📊 ML-Flow Training Metrics")
+        st.title(" ML-Flow Training Metrics")
 
-        if "retrain_result" in st.session_state:
-            retrain_result = st.session_state['retrain_result']
-            st.markdown(f"**MLflow Run ID:** {retrain_result['run_id']}")
+        if "retrain_result" in st.session_state and st.session_state["retrain_result"]:
+            result = st.session_state["retrain_result"]
+            metrics = result.get("metrics", {})
+            artifacts = result.get("artifacts", {})
 
-            # Remove model metrics from here
+            # Show MLflow run id if present
+            run_id = metrics.get("run_id")
+            if run_id:
+                st.markdown(f"**MLflow Run ID:** `{run_id}`")
+
             st.subheader("⚡ Anomaly Metrics")
             st.write({
-                "Total Records": retrain_result["total_records"],
-                "Anomaly Count": retrain_result["anomaly_count"],
-                "Anomaly Rate": retrain_result["anomaly_rate"],
-                "Duplicate Anomalies": retrain_result["duplicate_anomalies"],
-                "Rare Query Anomalies": retrain_result["rare_query_anomalies"],
-                "Atypical Combo Anomalies": retrain_result["atypical_combo_anomalies"],
-                "Threshold": retrain_result.get("threshold", 0)
+                "Total Records": metrics.get("total_records"),
+                "Anomaly Count": metrics.get("anomaly_count"),
+                "Anomaly Rate": metrics.get("anomaly_rate"),
+                "Duplicate Anomalies": metrics.get("duplicate_anomalies"),
+                "Rare Query Anomalies": metrics.get("rare_query_anomalies"),
+                "Atypical Combo Anomalies": metrics.get("atypical_combo_anomalies"),
+                "Threshold": metrics.get("threshold"),
             })
 
-            st.markdown("### 📈 Analytics Plots")
-            plots_paths = retrain_result.get("plots_paths", {})
+            # Helper to build URL from absolute path returned by the API
+            def art_url(p: str) -> str:
+                name = Path(p).name
+                return f"{TRAINER_API_URL.rstrip('/')}/static-artifacts/{name}"
 
-            if plots_paths:
-                plots_items = list(plots_paths.items())
-                num_cols = 3  # show 3 plots per row
-                for i in range(0, len(plots_items), num_cols):
-                    cols = st.columns(num_cols)
-                    for j, (title, path) in enumerate(plots_items[i:i+num_cols]):
-                        with cols[j]:
-                            st.subheader(title)
-                            if path.endswith(".csv"):
-                                st.dataframe(pd.read_csv(path))
-                            else:
-                                st.image(path, width=800)
-            else:
-                st.info("No plots available yet.")
-        else:
-            st.info("No retrain results available. Please retrain a model in ML Model Monitoring tab.")
+            # Local artifacts folder path
+            ARTIFACTS_DIR = Path(__file__).resolve().parents[1] / "malik" / "malik" / "trainer" / "run_streamlit"
+
+            st.markdown("###  Analytics Plots")
+
+            # List of all plots you want to display
+            plots = [
+                ("Feature Correlation", "feature_corr.png"),
+                ("Anomaly Bursts", "anomaly_bursts.png"),
+                ("Duplicate IDs", "duplicate_ids.png"),
+                ("Rare Queries", "rare_queries.png"),
+                ("Gap Anomalies", "gap_anomalies.png"),
+                ("Atypical Combo", "combo_anomalies.png"),
+            ]
+
+            # Create 3 columns per row
+            for row in range(0, len(plots), 3):
+                cols = st.columns(3, gap="large")
+                for col, (title, filename) in zip(cols, plots[row:row + 3]):
+                    img_path = ARTIFACTS_DIR / filename
+                    if img_path.exists():
+                        with col:
+                            st.image(str(img_path), caption=title, use_container_width=True)
+                    else:
+                        with col:
+                            st.markdown(f"❌ *{title} not found*")
+
+            # Optional message if no plots found
+            if not any((ARTIFACTS_DIR / f).exists() for _, f in plots):
+                st.warning("No plots found. Retrain your model to generate new analytics visuals.")
